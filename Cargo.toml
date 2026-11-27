@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/tokenscope-model", "crates/tokenscope-executor", "crates/tokenscope-adapter", "crates/tokenscope-invariants", "crates/tokenscope-scenarios", "crates/tokenscope-core", "crates/tokenscope-shrinker", "crates/tokenscope-report", "crates/tokenscope-cli", "crates/tokenscope-tui", "crates/tokenscope-fuzz-harness"]
 # The on-chain demo programs are built for SBF with `cargo build-sbf` and keep their own lockfile.
-exclude = ["programs/demo-escrow", "programs/demo-forwarder", "programs/demo-hook", "fuzz"]
+exclude = ["programs/demo-escrow", "programs/demo-forwarder", "programs/demo-hook", "fuzz", "demo/escrow-anchor"]
 
 [workspace.package]
 version = "0.1.0"

@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <a href="docs/toolchain.md"><img src="https://img.shields.io/badge/rust-1.99.0%2B-orange.svg" alt="Rust 1.99.0+" /></a>
   <a href="docs/supported-extensions.md"><img src="https://img.shields.io/badge/solana-Token--2022-14F195.svg?logo=solana&logoColor=white" alt="Solana Token-2022" /></a>
-  <a href="https://github.com/integral-830/tokenscope"><img src="https://img.shields.io/badge/tests-271%20passing-brightgreen.svg" alt="Tests: 271 passing" /></a>
+  <a href="https://github.com/integral-830/tokenscope"><img src="https://img.shields.io/badge/tests-276%20passing-brightgreen.svg" alt="Tests: 276 passing" /></a>
   <a href="docs/architecture.md"><img src="https://img.shields.io/badge/engine-Mollusk%20SVM-9945FF.svg" alt="Mollusk SVM" /></a>
   <a href="FORMAT.md"><img src="https://img.shields.io/badge/security-SARIF%202.1.0-blueviolet.svg" alt="SARIF 2.1.0" /></a>
 </p>
@@ -24,7 +24,8 @@ and writes reproducible findings.
 Target adapter -> Scenarios -> Real SVM execution -> Invariant checking -> Shrinking -> Findings
 ```
 
-> **Status:** version 0.1.0. One target (a demo escrow), 13 invariants (6 core, 7 `--extended`), and 271 passing workspace
+> **Status:** version 0.1.0. Two built-in targets (the demo escrow flavors), any SBF program through
+> `sbf-run` specs with declarative checks, 13 invariants (6 core, 7 `--extended`), and 276 passing workspace
 > tests. Token-2022 behavior verified by executable tests: transfer fees (including epoch delays,
 > `TransferCheckedWithFee`, harvest and withdraw), freeze/thaw, DefaultAccountState, Pausable,
 > transfer hooks (fixture hook), CPI Guard (direct and CPI forwarder fixture), delegates, permanent
@@ -58,6 +59,63 @@ executed 14 | pass 12 | execution failures 2 | invariant violations 0 | setup er
 ```
 
 Full walkthrough with replay and minimization: [docs/demo.md](docs/demo.md).
+
+## Live demo: a program TokenScope did not write
+
+The [Live demo workflow](https://github.com/integral-830/tokenscope/actions/workflows/live-demo.yml)
+builds the Solana Foundation Anchor escrow example ([`demo/escrow-anchor`](demo/), copied unmodified)
+and checks it with `tokenscope sbf-run` in the real SVM. Each run shows the findings as annotations on
+the escrow source lines, visible without signing in:
+
+| Rule | Setup | Finding | Line |
+|---|---|---|---|
+| `ESCROW-RECV-001` | 2% fee on the wanted token | maker receives 980 of the 1000 recorded in the offer | `take_offer.rs:81` |
+| `ESCROW-TAKE-001` | 2% fee on the offered token | `take_offer` reverts (Token-2022 error 35, vault holds withheld fees) | `take_offer.rs:128` |
+| `ESCROW-REFUND-001` | 2% fee on the offered token | `refund_offer` reverts the same way | `refund_offer.rs:86` |
+
+Control runs use the same program and calls with plain mints (no fee): every check holds there
+(maker receives exactly 1000, take and refund succeed), so the findings come from the fee, not from
+the checks. The job is green when exactly these findings are reported and the control runs are
+clean, and red otherwise.
+Details and a local run: [demo/README.md](demo/README.md).
+
+## Test your own program (no Rust code)
+
+`tokenscope sbf-run` loads **any** compiled SBF `.so` into the same real SVM with the real Token-2022
+program. You describe the program in a JSON spec: mints (transfer fee, Pausable, DefaultAccountState,
+PermanentDelegate, transfer hook), accounts (system, program-owned, PDA by seeds, token), byte offsets
+of the fields you care about, the instructions to call as raw hex, and the `checks` that must hold.
+TokenScope executes the calls, reports what actually moved on-chain, and evaluates the checks.
+
+```sh
+tokenscope sbf-run --spec examples/generic-sbf/escrow-vulnerable.json --format text --sarif out.sarif  # exit 1
+tokenscope sbf-run --spec examples/generic-sbf/escrow-corrected.json --format text                     # exit 0
+```
+
+Same deposit of 1,000 with a 2% fee, observed from decoded account state:
+
+| Spec | `escrow_state` liability | `vault` balance | `vault` withheld fee | `INV-ACCT-001` |
+|---|---|---|---|---|
+| `escrow-vulnerable.json` | 0 -> **1000** | 0 -> **980** | 20 | violated |
+| `escrow-corrected.json` | 0 -> 980 | 0 -> 980 | 20 | holds |
+
+A check either compares two observed quantities of a step (`left` / `right`: an account's `balance`,
+`fee`, `liability`, `reserve`, `shares` or `supply`, as `delta`, `before` or `after`, with `eq`, `le` or
+`ge`) or requires the step not to revert (`must_succeed`). Failed checks are findings: `sbf-run` exits
+with 1 and `--sarif` writes them as SARIF 2.1.0 pointing at the source line the check declares, so they
+show up as GitHub code-scanning alerts on the program's code.
+
+To point it at your program, change `elf_path`, `program_id`, the account list, the instruction bytes and
+the checks; nothing in the spec is specific to the demo escrow. Token accounts can be created at the
+owner's associated token address (`"associated": true`), and the SPL Associated Token Account program
+is loaded, so Anchor programs with `associated_token::` constraints run unmodified. `--format json`
+prints full observations (value flows, watched field deltas, authority changes, compute units, logs).
+`tokenscope sbf-session` exposes the same engine as a line-delimited JSON-RPC worker over stdio with
+snapshot and restore.
+
+**What works today vs. next:** `sbf-run` runs any program with declarative checks, verdicts and SARIF.
+The 13 built-in invariants, scenario generation and shrinking still run on the built-in targets;
+generating scenarios for arbitrary programs from their specs is the next milestone.
 
 ## Showcase Video and Demo
 
@@ -195,6 +253,8 @@ cargo test --workspace               # all tests (needs the built programs)
 | `report <campaign-id> [--format json\|text\|markdown\|sarif]` | print or export a campaign report | 0, 2 |
 | `corpus list \| replay <id>\|--all \| add <scenario> --description ...` | regression corpus | 0, 2, 3, 4 mismatch |
 | `tui [--suite S] [--extended] [--snapshot SCREEN]` | interactive UI (or print one screen headlessly) | 0, 2, 3 |
+| `sbf-run --spec FILE [--format json\|text] [--sarif FILE]` | run any SBF program from a JSON spec, evaluate its checks | 0 no findings, 1 findings, 2, 3 |
+| `sbf-session` | JSON-RPC worker over stdio for the generic SBF engine | 0 |
 | `completion <shell>` | generate shell autocompletion (`bash`, `zsh`, `fish`, `powershell`, `elvish`) | 0 |
 
 Targets: `demo-escrow-vulnerable`, `demo-escrow-corrected`, or `demo-escrow` (both).
@@ -213,7 +273,9 @@ guided by program coverage), and `stateful` (model-based state-machine generatio
 ## Repository layout
 
 `crates/tokenscope-{model,executor,adapter,invariants,scenarios,shrinker,core,report,cli,tui,fuzz-harness}`,
-`programs/demo-{escrow,hook,forwarder}`, `fixtures/` (scenarios and the regression corpus), `scripts/`, `docs/`.
+`programs/demo-{escrow,hook,forwarder}`, `examples/generic-sbf/` (`sbf-run` specs for the demo escrow),
+`demo/` (live demo: third-party escrow and its specs), `fixtures/` (scenarios and the regression corpus),
+`scripts/`, `docs/`.
 Architecture: [docs/architecture.md](docs/architecture.md).
 
 ## Execution boundaries and security model
@@ -243,7 +305,9 @@ TokenScope models the Solana execution environment with explicit boundaries:
 
 ## Limitations
 
-* One target program (the demo escrow). Token-2022 coverage is listed with its limits in
+* Two built-in targets (the demo escrow flavors) for scenario generation, the 13 invariants and shrinking;
+  other programs run through `sbf-run` specs, whose calls and checks are written by hand (no scenario
+  generation or shrinking for them yet). Token-2022 coverage is listed with its limits in
   [docs/supported-extensions.md](docs/supported-extensions.md); confidential transfers and production
   TokenMetadata account data are **not covered**. Pointer extensions, multisig authorities, required
   transfer memos, and CPI Guard restrictions are verified by dedicated executable test suites. The
@@ -267,7 +331,8 @@ TokenScope models the Solana execution environment with explicit boundaries:
 | Script | Purpose |
 |---|---|
 | `scripts/build-programs.sh` | build escrow (two flavors), demo hook and CPI forwarder from source |
-| `scripts/release-check.sh [bin]` | exercise every command and exit code on a built binary (49 checks) |
+| `scripts/release-check.sh [bin]` | exercise every command and exit code on a built binary (59 checks) |
+| `scripts/run-live-demo.sh [bin]` | build the third-party escrow in `demo/` and check it for the expected findings |
 | `scripts/check-tui-terminal.py` | verify terminal restoration on quit, error, panic, SIGTERM, SIGHUP (pty) |
 | `scripts/fuzz.sh <target> [s]` | libFuzzer run on the stable compiler ([fuzz/README.md](fuzz/README.md)) |
 | `cargo run --release -p tokenscope-core --example bench` | benchmarks ([docs/benchmarks.md](docs/benchmarks.md)) |

@@ -19,9 +19,38 @@ use spl_token_2022_interface::{
     instruction as token_ix,
     state::{Account as TokenAccount, AccountState, Mint},
 };
-use tokenscope_model::MintSpec;
+use tokenscope_model::{MintSpec, RawAccount, RawSnapshot};
 
 use crate::ExecError;
+
+const LEGACY_SPL_TOKEN_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/// Deterministic SVM checkpoint containing the account store and clock state.
+#[derive(Clone)]
+pub struct SvmSnapshot {
+    store: HashMap<Pubkey, Account>,
+    slot: u64,
+    unix_timestamp: i64,
+}
+
+/// Decoded generic inspection of one Solana account in the active store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountInspection {
+    /// Program owning this account.
+    pub owner: Pubkey,
+    /// Lamport balance.
+    pub lamports: u64,
+    /// Executable flag.
+    pub executable: bool,
+    /// Raw account bytes.
+    pub data: Vec<u8>,
+    /// Decoded Token / Token-2022 account fields when unpackable.
+    pub token: Option<TokenAccountView>,
+    /// Decoded Mint total supply when unpackable.
+    pub mint_supply: Option<u64>,
+    /// Decoded Pausable mint flag when unpackable.
+    pub mint_paused: Option<bool>,
+}
 
 /// Deterministically derive an address from a label (reproducible runs need stable addresses).
 pub fn derive_address(label: &str) -> Pubkey {
@@ -122,6 +151,30 @@ impl Harness {
         self.ctx
             .mollusk
             .add_program_with_loader_and_elf(program_id, &LOADER_V3, elf);
+    }
+
+    /// Register the bundled SPL Associated Token Account program (mainnet ELF) at its canonical
+    /// address, for target programs that create associated token accounts through CPI.
+    pub fn load_associated_token_program(&mut self) {
+        mollusk_svm_programs_token::associated_token::add_program(&mut self.ctx.mollusk);
+    }
+
+    /// Canonical address of the SPL Associated Token Account program.
+    pub fn associated_token_program_id() -> Pubkey {
+        mollusk_svm_programs_token::associated_token::ID
+    }
+
+    /// Associated Token-2022 account address for `owner` and `mint`.
+    pub fn associated_token_address(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[
+                owner.as_ref(),
+                spl_token_2022_interface::id().as_ref(),
+                mint.as_ref(),
+            ],
+            &Self::associated_token_program_id(),
+        )
+        .0
     }
 
     /// Execute one instruction and report errors, logs and compute usage. State persists only
@@ -296,6 +349,18 @@ impl Harness {
         owner: &Pubkey,
     ) -> Result<Pubkey, ExecError> {
         let account = derive_address(&format!("token-account/{label}"));
+        self.create_token_account_at(&account, mint, owner)
+    }
+
+    /// Create and initialize a Token-2022 token account at an explicit `account` address (for
+    /// example the owner's associated token account, which programs verify by address).
+    pub fn create_token_account_at(
+        &self,
+        account: &Pubkey,
+        mint: &Pubkey,
+        owner: &Pubkey,
+    ) -> Result<Pubkey, ExecError> {
+        let account = *account;
         let token = spl_token_2022_interface::id();
         let mint_data = self.account(mint)?.data;
         let space = account_len::try_calculate_account_len_from_mint_data(&mint_data, &[])
@@ -950,6 +1015,130 @@ impl Harness {
     /// Raw account bytes (for evidence capture and tests).
     pub fn raw_account(&self, address: &Pubkey) -> Result<Account, ExecError> {
         self.account(address)
+    }
+
+    /// Insert or replace an account directly in the backing SVM store.
+    pub fn set_account(
+        &self,
+        address: &Pubkey,
+        owner: &Pubkey,
+        data: &[u8],
+        lamports: Option<u64>,
+        executable: bool,
+    ) {
+        let lam = lamports.unwrap_or_else(|| self.rent_for(data.len()));
+        let acct = Account {
+            lamports: lam,
+            data: data.to_vec(),
+            owner: *owner,
+            executable,
+            rent_epoch: 0,
+        };
+        self.ctx.account_store.borrow_mut().insert(*address, acct);
+    }
+
+    /// Snapshot the full account store and current clock sysvar.
+    pub fn snapshot_state(&self) -> SvmSnapshot {
+        SvmSnapshot {
+            store: self.ctx.account_store.borrow().clone(),
+            slot: self.ctx.mollusk.sysvars.clock.slot,
+            unix_timestamp: self.ctx.mollusk.sysvars.clock.unix_timestamp,
+        }
+    }
+
+    /// Restore the full account store and clock sysvar from a prior snapshot.
+    pub fn restore_state(&mut self, snap: &SvmSnapshot) {
+        *self.ctx.account_store.borrow_mut() = snap.store.clone();
+        self.ctx.mollusk.warp_to_slot(snap.slot);
+        self.ctx.mollusk.sysvars.clock.unix_timestamp = snap.unix_timestamp;
+    }
+
+    /// Advance Mollusk clock slot and unix timestamp.
+    pub fn advance_clock(&mut self, slots: u64, seconds: i64) {
+        let next_slot = self.ctx.mollusk.sysvars.clock.slot.saturating_add(slots);
+        self.ctx.mollusk.warp_to_slot(next_slot);
+        self.ctx.mollusk.sysvars.clock.unix_timestamp = self
+            .ctx
+            .mollusk
+            .sysvars
+            .clock
+            .unix_timestamp
+            .saturating_add(seconds);
+    }
+
+    /// Inspect an account's owner, lamports, raw bytes, and SPL Token / Mint state if applicable.
+    pub fn inspect_account(&self, address: &Pubkey) -> Option<AccountInspection> {
+        let acct = self.ctx.account_store.borrow().get(address).cloned()?;
+        let is_token_prog = acct.owner == spl_token_2022_interface::id()
+            || acct.owner.to_string() == LEGACY_SPL_TOKEN_ID;
+        let token = if is_token_prog {
+            StateWithExtensions::<TokenAccount>::unpack(&acct.data)
+                .ok()
+                .map(|state| {
+                    let withheld = state
+                        .get_extension::<TransferFeeAmount>()
+                        .ok()
+                        .map(|e| u64::from(e.withheld_amount));
+                    TokenAccountView {
+                        owner: state.base.owner,
+                        amount: state.base.amount,
+                        withheld,
+                        frozen: state.base.state == AccountState::Frozen,
+                        delegate: Option::<Pubkey>::from(state.base.delegate),
+                        delegated_amount: state.base.delegated_amount,
+                    }
+                })
+        } else {
+            None
+        };
+        let (mint_supply, mint_paused) = if is_token_prog {
+            match StateWithExtensions::<Mint>::unpack(&acct.data) {
+                Ok(state) => {
+                    let paused = state
+                        .get_extension::<spl_token_2022_interface::extension::pausable::PausableConfig>()
+                        .ok()
+                        .map(|c| bool::from(c.paused));
+                    (Some(state.base.supply), paused)
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        Some(AccountInspection {
+            owner: acct.owner,
+            lamports: acct.lamports,
+            executable: acct.executable,
+            data: acct.data,
+            token,
+            mint_supply,
+            mint_paused,
+        })
+    }
+
+    /// Capture a target-agnostic [`RawSnapshot`] across tracked `(label, pubkey)` accounts.
+    pub fn raw_snapshot(&self, tracked: &[(&str, Pubkey)]) -> RawSnapshot {
+        let store = self.ctx.account_store.borrow();
+        let mut accounts = Vec::with_capacity(tracked.len());
+        let mut total_lamports = 0u64;
+        for (_, addr) in tracked {
+            if let Some(acct) = store.get(addr) {
+                total_lamports = total_lamports.saturating_add(acct.lamports);
+                let data_hex: String = acct.data.iter().map(|b| format!("{b:02x}")).collect();
+                accounts.push(RawAccount {
+                    address: addr.to_string(),
+                    owner: acct.owner.to_string(),
+                    lamports: acct.lamports,
+                    executable: acct.executable,
+                    data_len: acct.data.len(),
+                    data_hex,
+                });
+            }
+        }
+        RawSnapshot {
+            accounts,
+            total_lamports,
+        }
     }
 }
 

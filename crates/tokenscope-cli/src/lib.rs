@@ -168,6 +168,20 @@ pub enum Command {
         #[command(subcommand)]
         command: CorpusCommand,
     },
+    /// Run a target-agnostic SBF batch spec JSON via `GenericSbfAdapter`.
+    SbfRun {
+        /// Generic SBF batch spec JSON file.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Output format: `json` (full observations and findings) or `text` (summary).
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Also write the spec's check findings as a SARIF 2.1.0 file.
+        #[arg(long)]
+        sarif: Option<PathBuf>,
+    },
+    /// Run a persistent newline-delimited JSON-RPC `GenericSbfSession` worker over stdio.
+    SbfSession,
     /// Generate shell autocompletion script.
     Completion {
         /// Shell to generate completions for (`bash`, `zsh`, `fish`, `powershell`, `elvish`).

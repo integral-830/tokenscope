@@ -1,0 +1,274 @@
+{
+  "config": {
+    "target_id": "escrow-fee-on-offered-token",
+    "program_id": "3o3jk7aj2aGCGsbChkgeNdHcBmeEmGA7BtpnTXdVSgtr",
+    "elf_path": "target/demo/escrow.so",
+    "mints": [
+      {
+        "label": "mint_a",
+        "decimals": 6,
+        "transfer_fee_bp": 200,
+        "maximum_fee": 18446744073709551615
+      },
+      {
+        "label": "mint_b",
+        "decimals": 6
+      }
+    ],
+    "accounts": [
+      {
+        "label": "maker",
+        "role": "user",
+        "kind": "system"
+      },
+      {
+        "label": "taker",
+        "role": "user",
+        "kind": "system"
+      },
+      {
+        "label": "maker_token_account_a",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_a",
+        "owner_label": "maker",
+        "associated": true,
+        "initial_amount": 10000
+      },
+      {
+        "label": "maker_token_account_b",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_b",
+        "owner_label": "maker",
+        "associated": true,
+        "initial_amount": 0
+      },
+      {
+        "label": "taker_token_account_a",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_a",
+        "owner_label": "taker",
+        "associated": true,
+        "initial_amount": 0
+      },
+      {
+        "label": "taker_token_account_b",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_b",
+        "owner_label": "taker",
+        "associated": true,
+        "initial_amount": 10000
+      },
+      {
+        "label": "offer",
+        "role": "protocol",
+        "kind": "pda",
+        "pda_seeds": [
+          {
+            "kind": "utf8",
+            "value": "offer"
+          },
+          {
+            "kind": "account",
+            "label": "maker"
+          },
+          {
+            "kind": "hex",
+            "hex": "0100000000000000"
+          }
+        ],
+        "u64_fields": [
+          {
+            "name": "token_b_wanted_amount",
+            "offset": 112,
+            "kind": "liability",
+            "asset": "mint_b"
+          }
+        ]
+      },
+      {
+        "label": "vault",
+        "role": "vault",
+        "kind": "pda",
+        "mint": "mint_a",
+        "pda_program_label": "associated_token",
+        "pda_seeds": [
+          {
+            "kind": "account",
+            "label": "offer"
+          },
+          {
+            "kind": "account",
+            "label": "token2022"
+          },
+          {
+            "kind": "account",
+            "label": "mint_a"
+          }
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "fn_name": "make_offer",
+      "caller_label": "maker",
+      "caller_role": "user",
+      "data_hex": "d66261233b0c2cb20100000000000000e803000000000000e803000000000000",
+      "accounts": [
+        {
+          "label": "maker",
+          "is_signer": true,
+          "is_writable": true
+        },
+        {
+          "label": "mint_a"
+        },
+        {
+          "label": "mint_b"
+        },
+        {
+          "label": "maker_token_account_a",
+          "is_writable": true
+        },
+        {
+          "label": "offer",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "associated_token"
+        },
+        {
+          "label": "token2022"
+        },
+        {
+          "label": "system"
+        }
+      ]
+    },
+    {
+      "fn_name": "take_offer",
+      "caller_label": "taker",
+      "caller_role": "user",
+      "data_hex": "809cf2cfedc067f0",
+      "accounts": [
+        {
+          "label": "taker",
+          "is_signer": true,
+          "is_writable": true
+        },
+        {
+          "label": "maker",
+          "is_writable": true
+        },
+        {
+          "label": "mint_a"
+        },
+        {
+          "label": "mint_b"
+        },
+        {
+          "label": "taker_token_account_a",
+          "is_writable": true
+        },
+        {
+          "label": "taker_token_account_b",
+          "is_writable": true
+        },
+        {
+          "label": "maker_token_account_b",
+          "is_writable": true
+        },
+        {
+          "label": "offer",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "associated_token"
+        },
+        {
+          "label": "token2022"
+        },
+        {
+          "label": "system"
+        }
+      ]
+    },
+    {
+      "fn_name": "refund_offer",
+      "caller_label": "maker",
+      "caller_role": "user",
+      "data_hex": "ab124620f4793c4b",
+      "accounts": [
+        {
+          "label": "maker",
+          "is_signer": true,
+          "is_writable": true
+        },
+        {
+          "label": "mint_a"
+        },
+        {
+          "label": "maker_token_account_a",
+          "is_writable": true
+        },
+        {
+          "label": "offer",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "token2022"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "ESCROW-MAKE-001",
+      "title": "make_offer succeeds",
+      "step": "make_offer",
+      "must_succeed": true,
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/make_offer.rs",
+        "line": 66
+      }
+    },
+    {
+      "id": "ESCROW-TAKE-001",
+      "title": "take_offer succeeds when mint A has a transfer fee (closing the vault fails while it holds withheld fees, until someone runs HarvestWithheldTokensToMint)",
+      "step": "take_offer",
+      "must_succeed": true,
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/take_offer.rs",
+        "line": 128
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "ESCROW-REFUND-001",
+      "title": "refund_offer succeeds when mint A has a transfer fee (same vault close failure)",
+      "step": "refund_offer",
+      "must_succeed": true,
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/refund_offer.rs",
+        "line": 86
+      },
+      "severity": "warning"
+    }
+  ]
+}

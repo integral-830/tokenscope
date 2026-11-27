@@ -1,0 +1,149 @@
+{
+  "config": {
+    "target_id": "my-escrow-vulnerable",
+    "elf_path": "target/sbf-programs/demo_escrow_vulnerable.so",
+    "mints": [
+      {
+        "label": "mint",
+        "decimals": 6,
+        "transfer_fee_bp": 200,
+        "maximum_fee": 18446744073709551615
+      }
+    ],
+    "accounts": [
+      {
+        "label": "depositor",
+        "role": "depositor",
+        "kind": "system"
+      },
+      {
+        "label": "escrow_state",
+        "role": "protocol",
+        "kind": "program_owned",
+        "owner_label": "target",
+        "space": 105,
+        "u64_fields": [
+          {
+            "name": "escrow_recorded",
+            "offset": 97,
+            "kind": "liability",
+            "asset": "mint"
+          }
+        ],
+        "authority_offsets": [
+          1
+        ]
+      },
+      {
+        "label": "escrow_authority",
+        "role": "protocol",
+        "kind": "pda",
+        "pda_seeds": [
+          {
+            "kind": "utf8",
+            "value": "escrow"
+          },
+          {
+            "kind": "account",
+            "label": "escrow_state"
+          }
+        ]
+      },
+      {
+        "label": "vault",
+        "role": "vault",
+        "kind": "token",
+        "mint": "mint",
+        "owner_label": "escrow_authority",
+        "initial_amount": 0
+      },
+      {
+        "label": "depositor_source",
+        "role": "depositor",
+        "kind": "token",
+        "mint": "mint",
+        "owner_label": "depositor",
+        "initial_amount": 10000
+      }
+    ],
+    "setup_calls": [
+      {
+        "fn_name": "init",
+        "data_hex": "00",
+        "caller_label": "depositor",
+        "caller_role": "depositor",
+        "accounts": [
+          {
+            "label": "escrow_state",
+            "is_writable": true
+          },
+          {
+            "label": "depositor",
+            "is_signer": true
+          },
+          {
+            "label": "mint"
+          },
+          {
+            "label": "vault"
+          }
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "fn_name": "deposit",
+      "data_hex": "01e803000000000000",
+      "caller_label": "depositor",
+      "caller_role": "depositor",
+      "accounts": [
+        {
+          "label": "escrow_state",
+          "is_writable": true
+        },
+        {
+          "label": "depositor",
+          "is_signer": true
+        },
+        {
+          "label": "depositor_source",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "mint"
+        },
+        {
+          "label": "token2022"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "INV-ACCT-001",
+      "title": "Credited liability equals the tokens the vault actually received",
+      "step": "deposit",
+      "must_succeed": true,
+      "left": {
+        "account": "escrow_state",
+        "kind": "liability",
+        "measure": "delta"
+      },
+      "right": {
+        "account": "vault",
+        "kind": "balance",
+        "measure": "delta"
+      },
+      "op": "eq",
+      "location": {
+        "uri": "programs/demo-escrow/src/lib.rs",
+        "line": 144
+      }
+    }
+  ]
+}

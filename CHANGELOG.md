@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+* **Any SBF program through JSON specs (`sbf-run`, `sbf-session`):**
+  * Added `GenericSbfAdapter` and `GenericSbfSession`: load a compiled `.so` into the Mollusk SVM with Token-2022 mints, system, program-owned, PDA and token accounts, and raw instruction bytes described in a JSON spec; report value flows, watched field deltas and authority changes per step.
+  * Added declarative `checks` (compare two observed quantities of a step, or require that a step does not revert), `CheckFinding`, and SARIF 2.1.0 output pointing at the source line a check declares. `sbf-run` exits with 1 on findings; `--format text|json`, `--sarif FILE`.
+  * Loaded the SPL Associated Token Account program and added `"associated": true` token accounts, so Anchor programs with `associated_token::` constraints run unmodified. Accounts created or closed inside a call are diffed against an empty account.
+  * Added `examples/generic-sbf/` (demo escrow as a spec with `INV-ACCT-001`), 4 adapter tests, 1 CLI test, and 10 `release-check.sh` checks.
+* **Live demo on a third-party program:**
+  * Added `demo/escrow-anchor` (Solana Foundation Anchor escrow example, unmodified, MIT), its specs, `scripts/run-live-demo.sh`, and the `Live demo` workflow. TokenScope reports a maker underpayment with a fee on the wanted token (980 of 1000) and `take_offer` / `refund_offer` reverting with Token-2022 error 35 with a fee on the offered token. Control runs with plain mints (`demo/control`) pass every check.
 * **Extended invariants (`--extended`, 13 total):**
   * Added 3 DeFi/math invariants (`INV-ZERO-001` dust/zero truncation, `INV-DILUT-001` asset-to-liability dilution, `INV-SYMM-001` asymmetric vault drains) and 4 Token-2022 policy invariants (`INV-PAUSE-001`, `INV-FREEZE-001`, `INV-CPI-001`, `INV-HOOK-001`).
   * Added `extended_catalog()`, `InvariantRegistry::with_extended_invariants()`, `Engine::with_extended_invariants()`, and `--extended` CLI flag across `inspect`, `run`, `replay`, `minimize`, `tui`, and `RunConfig`.

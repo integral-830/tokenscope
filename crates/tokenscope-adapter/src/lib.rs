@@ -1,12 +1,24 @@
 //! Target adapters.
 //!
 //! A program ID alone does not define behavior: an adapter says how to deploy the program, set up
-//! its accounts, build its instructions, and observe its state. The only adapter so far targets the
-//! demo escrow in `programs/demo-escrow`.
+//! its accounts, build its instructions, and observe its state. [`EscrowAdapter`] targets the demo
+//! escrow in `programs/demo-escrow`; [`GenericSbfAdapter`] runs any compiled SBF program described
+//! by a JSON spec and evaluates the spec's declarative checks.
 
 mod escrow;
+pub mod generic_checks;
+pub mod generic_sbf;
 
 pub use escrow::{EscrowAdapter, EscrowFlavor, default_program_dir};
+pub use generic_checks::{
+    CheckFinding, CheckLocation, CheckSpec, QuantitySpec, evaluate_checks, findings_to_sarif,
+};
+pub use generic_sbf::{
+    AccountSetupSpec, ExtraProgramSpec, GenericBatchOutput, GenericBatchSpec, GenericSbfAdapter,
+    GenericSbfConfig, GenericSbfSession, MintSetupSpec, ObservedPrivilegeChange,
+    ObservedStateDelta, ObservedValueFlow, SbfAccountMetaSpec, SbfCallObservation, SbfCallSpec,
+    SbfRpcHandler, SbfRpcRequest, SeedSpec, U64FieldSpec,
+};
 use tokenscope_executor::ExecError;
 use tokenscope_model::{ExecutionTrace, Scenario};
 

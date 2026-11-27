@@ -1,0 +1,88 @@
+name: Live demo
+
+# Builds a program TokenScope did not write (the Solana Foundation Anchor escrow example in
+# demo/escrow-anchor, unmodified) and checks it with `tokenscope sbf-run`. The job passes when
+# TokenScope reports exactly the findings in demo/expected-findings.txt and the control runs (no
+# transfer fee, demo/control) are clean; the findings are shown as
+# annotations on the escrow source lines and in the job summary.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: ""
+  PLATFORM_TOOLS_SHA256: 7b82eb420b5aebd1e5590db0ae25c523eca06724d4238ae02139690535636c37
+
+jobs:
+  escrow:
+    name: Solana Foundation escrow under TokenScope
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.99.0
+        run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      - name: Install build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config jq
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-build-sbf
+            ~/.cache/solana
+            target
+            demo/escrow-anchor/target
+          key: live-demo-${{ hashFiles('Cargo.lock', 'demo/escrow-anchor/Cargo.lock') }}-pt1.58-bsbf4.5.0
+      - name: Install cargo-build-sbf 4.5.0
+        run: command -v cargo-build-sbf || cargo install cargo-build-sbf --version 4.5.0 --locked
+      - name: Install Solana platform-tools v1.58 (checksum verified)
+        run: |
+          set -eu
+          if [ ! -x "$HOME/.cache/solana/v1.58/platform-tools/rust/bin/rustc" ]; then
+            curl -fsSL -o /tmp/pt.tar.bz2 https://github.com/anza-xyz/platform-tools/releases/download/v1.58/platform-tools-linux-x86_64.tar.bz2
+            echo "$PLATFORM_TOOLS_SHA256  /tmp/pt.tar.bz2" | sha256sum -c -
+            mkdir -p "$HOME/.cache/solana/v1.58/platform-tools"
+            tar xjf /tmp/pt.tar.bz2 -C "$HOME/.cache/solana/v1.58/platform-tools"
+          fi
+      - name: Build TokenScope
+        run: cargo build --release -p tokenscope-cli
+      - name: Build the escrow and run TokenScope on it
+        run: ./scripts/run-live-demo.sh target/release/tokenscope
+      - name: Show findings
+        if: always()
+        run: |
+          shopt -s nullglob
+          sarifs=(target/demo/results/*.sarif)
+          [ ${#sarifs[@]} -gt 0 ] || exit 0
+          # One annotation per finding, on the escrow source line the check points at.
+          jq -r '.runs[].results[] |
+            (if .level == "error" then "error" else "warning" end) as $lvl |
+            .locations[0].physicalLocation as $loc |
+            "::\($lvl) file=\($loc.artifactLocation.uri),line=\($loc.region.startLine),title=TokenScope \(.ruleId)::\(.message.text)"' \
+            "${sarifs[@]}"
+          {
+            echo "## TokenScope on the Solana Foundation Anchor escrow"
+            echo
+            echo "Program: \`demo/escrow-anchor\` (solana-developers/program-examples, unmodified), built with cargo-build-sbf and executed in the Mollusk SVM with the real Token-2022 and Associated Token Account programs."
+            echo
+            echo "| Rule | Level | Location | Finding |"
+            echo "|---|---|---|---|"
+            jq -r '.runs[].results[] | .locations[0].physicalLocation as $loc |
+              "| \(.ruleId) | \(.level) | `\($loc.artifactLocation.uri):\($loc.region.startLine)` | \(.message.text | gsub("[|]"; "/")) |"' \
+              "${sarifs[@]}"
+            for f in target/demo/results/*.txt; do
+              echo
+              echo "### $(basename "$f" .txt)"
+              echo
+              echo '```'
+              cat "$f"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,251 @@
+{
+  "config": {
+    "target_id": "escrow-fee-on-wanted-token",
+    "program_id": "3o3jk7aj2aGCGsbChkgeNdHcBmeEmGA7BtpnTXdVSgtr",
+    "elf_path": "target/demo/escrow.so",
+    "mints": [
+      {
+        "label": "mint_a",
+        "decimals": 6
+      },
+      {
+        "label": "mint_b",
+        "decimals": 6,
+        "transfer_fee_bp": 200,
+        "maximum_fee": 18446744073709551615
+      }
+    ],
+    "accounts": [
+      {
+        "label": "maker",
+        "role": "user",
+        "kind": "system"
+      },
+      {
+        "label": "taker",
+        "role": "user",
+        "kind": "system"
+      },
+      {
+        "label": "maker_token_account_a",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_a",
+        "owner_label": "maker",
+        "associated": true,
+        "initial_amount": 10000
+      },
+      {
+        "label": "maker_token_account_b",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_b",
+        "owner_label": "maker",
+        "associated": true,
+        "initial_amount": 0
+      },
+      {
+        "label": "taker_token_account_a",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_a",
+        "owner_label": "taker",
+        "associated": true,
+        "initial_amount": 0
+      },
+      {
+        "label": "taker_token_account_b",
+        "role": "user",
+        "kind": "token",
+        "mint": "mint_b",
+        "owner_label": "taker",
+        "associated": true,
+        "initial_amount": 10000
+      },
+      {
+        "label": "offer",
+        "role": "protocol",
+        "kind": "pda",
+        "pda_seeds": [
+          {
+            "kind": "utf8",
+            "value": "offer"
+          },
+          {
+            "kind": "account",
+            "label": "maker"
+          },
+          {
+            "kind": "hex",
+            "hex": "0100000000000000"
+          }
+        ],
+        "u64_fields": [
+          {
+            "name": "token_b_wanted_amount",
+            "offset": 112,
+            "kind": "liability",
+            "asset": "mint_b"
+          }
+        ]
+      },
+      {
+        "label": "vault",
+        "role": "vault",
+        "kind": "pda",
+        "mint": "mint_a",
+        "pda_program_label": "associated_token",
+        "pda_seeds": [
+          {
+            "kind": "account",
+            "label": "offer"
+          },
+          {
+            "kind": "account",
+            "label": "token2022"
+          },
+          {
+            "kind": "account",
+            "label": "mint_a"
+          }
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "fn_name": "make_offer",
+      "caller_label": "maker",
+      "caller_role": "user",
+      "data_hex": "d66261233b0c2cb20100000000000000e803000000000000e803000000000000",
+      "accounts": [
+        {
+          "label": "maker",
+          "is_signer": true,
+          "is_writable": true
+        },
+        {
+          "label": "mint_a"
+        },
+        {
+          "label": "mint_b"
+        },
+        {
+          "label": "maker_token_account_a",
+          "is_writable": true
+        },
+        {
+          "label": "offer",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "associated_token"
+        },
+        {
+          "label": "token2022"
+        },
+        {
+          "label": "system"
+        }
+      ]
+    },
+    {
+      "fn_name": "take_offer",
+      "caller_label": "taker",
+      "caller_role": "user",
+      "data_hex": "809cf2cfedc067f0",
+      "accounts": [
+        {
+          "label": "taker",
+          "is_signer": true,
+          "is_writable": true
+        },
+        {
+          "label": "maker",
+          "is_writable": true
+        },
+        {
+          "label": "mint_a"
+        },
+        {
+          "label": "mint_b"
+        },
+        {
+          "label": "taker_token_account_a",
+          "is_writable": true
+        },
+        {
+          "label": "taker_token_account_b",
+          "is_writable": true
+        },
+        {
+          "label": "maker_token_account_b",
+          "is_writable": true
+        },
+        {
+          "label": "offer",
+          "is_writable": true
+        },
+        {
+          "label": "vault",
+          "is_writable": true
+        },
+        {
+          "label": "associated_token"
+        },
+        {
+          "label": "token2022"
+        },
+        {
+          "label": "system"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "ESCROW-MAKE-001",
+      "title": "make_offer succeeds",
+      "step": "make_offer",
+      "must_succeed": true,
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/make_offer.rs",
+        "line": 66
+      }
+    },
+    {
+      "id": "ESCROW-TAKE-001",
+      "title": "take_offer succeeds",
+      "step": "take_offer",
+      "must_succeed": true,
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/take_offer.rs",
+        "line": 77
+      }
+    },
+    {
+      "id": "ESCROW-RECV-001",
+      "title": "Maker receives the full token B amount recorded in the offer (a Token-2022 transfer fee on mint B is deducted from the maker)",
+      "step": "take_offer",
+      "left": {
+        "account": "maker_token_account_b",
+        "kind": "balance",
+        "measure": "delta"
+      },
+      "right": {
+        "account": "offer",
+        "kind": "liability",
+        "measure": "before"
+      },
+      "op": "eq",
+      "location": {
+        "uri": "demo/escrow-anchor/programs/escrow/src/instructions/take_offer.rs",
+        "line": 81
+      }
+    }
+  ]
+}

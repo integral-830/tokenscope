@@ -2,13 +2,16 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
 use thiserror::Error;
-use tokenscope_adapter::{EscrowFlavor, default_program_dir};
+use tokenscope_adapter::{
+    EscrowFlavor, GenericBatchSpec, GenericSbfAdapter, SbfRpcHandler, SbfRpcRequest,
+    default_program_dir, findings_to_sarif,
+};
 use tokenscope_core::{
     Engine, TARGETS,
     corpus::{Corpus, CorpusError, replay_case},
@@ -254,6 +257,12 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
             tui(opts, snapshot, out)
         }
         Command::Corpus { command } => corpus(command, out),
+        Command::SbfRun {
+            spec,
+            format,
+            sarif,
+        } => sbf_run(&spec, &format, sarif.as_deref(), out),
+        Command::SbfSession => sbf_session(out),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             clap_complete::generate(shell, &mut crate::Cli::command(), "tokenscope", out);
@@ -758,4 +767,119 @@ fn tui(
             Ok(EXIT_OK)
         }
     }
+}
+
+fn sbf_run(
+    spec_path: &Path,
+    format: &str,
+    sarif: Option<&Path>,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    if !matches!(format, "json" | "text") {
+        return Err(usage(format!(
+            "unknown format `{format}`; expected json or text"
+        )));
+    }
+    let text = read_file(spec_path)?;
+    let batch: GenericBatchSpec = serde_json::from_str(&text).map_err(|e| {
+        usage(format!(
+            "{}: invalid generic SBF spec: {e}",
+            spec_path.display()
+        ))
+    })?;
+    let calls = batch.calls.clone();
+    let check_count = batch.checks.len();
+    let adapter = GenericSbfAdapter::new(batch);
+    let output = adapter
+        .execute_batch()
+        .map_err(|e| CliError::Setup(e.to_string()))?;
+
+    if let Some(path) = sarif {
+        let spec_uri = spec_path.display().to_string().replace('\\', "/");
+        let log = findings_to_sarif(&output.findings, &spec_uri);
+        let body =
+            serde_json::to_string_pretty(&log).map_err(|e| CliError::Setup(e.to_string()))?;
+        fs::write(path, body)
+            .map_err(|e| CliError::Setup(format!("cannot write {}: {e}", path.display())))?;
+    }
+
+    if format == "text" {
+        writeln!(out, "target {}", output.target_id)?;
+        for (i, (call, step)) in calls.iter().zip(&output.steps).enumerate() {
+            let name = call.fn_name.as_deref().unwrap_or("call");
+            writeln!(
+                out,
+                "step {i} {name}: {} ({} CU){}",
+                step.status,
+                step.compute_units,
+                if step.revert_reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", step.revert_reason)
+                }
+            )?;
+            for f in step.value_flows.iter().filter(|f| f.delta != 0) {
+                writeln!(
+                    out,
+                    "  {:<24} {:<9} {:<7} {} -> {} ({:+})",
+                    f.account, f.kind, f.asset, f.before, f.after, f.delta
+                )?;
+            }
+        }
+        writeln!(
+            out,
+            "checks {check_count} | findings {}",
+            output.findings.len()
+        )?;
+        for f in &output.findings {
+            writeln!(out, "{} [{}] {}", f.rule_id, f.severity, f.title)?;
+            writeln!(out, "  {}", f.message)?;
+            if let Some(loc) = &f.location {
+                writeln!(out, "  at {}:{}", loc.uri, loc.line)?;
+            }
+        }
+    } else {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&output).map_err(|e| CliError::Setup(e.to_string()))?
+        )?;
+    }
+    out.flush()?;
+    Ok(if output.findings.is_empty() {
+        EXIT_OK
+    } else {
+        EXIT_VIOLATIONS
+    })
+}
+
+fn sbf_session(out: &mut dyn Write) -> Result<i32> {
+    let stdin = io::stdin();
+    let mut handler = SbfRpcHandler::new();
+    for line_res in stdin.lock().lines() {
+        let line = line_res?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let req: SbfRpcRequest = match serde_json::from_str(trimmed) {
+            Ok(r) => r,
+            Err(e) => {
+                writeln!(
+                    out,
+                    "__RPC__:{}",
+                    serde_json::json!({ "id": 0, "ok": false, "error": format!("malformed request: {e}") })
+                )?;
+                out.flush()?;
+                continue;
+            }
+        };
+        let (resp, should_exit) = handler.handle(req);
+        writeln!(out, "__RPC__:{resp}")?;
+        out.flush()?;
+        if should_exit {
+            break;
+        }
+    }
+    Ok(EXIT_OK)
 }

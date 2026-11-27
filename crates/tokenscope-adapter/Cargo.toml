@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 solana-instruction = "3.2"
 solana-pubkey = { version = "4.1", features = ["curve25519"] }
 solana-system-interface = { version = "3.3", features = ["bincode"] }

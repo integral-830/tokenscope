@@ -85,6 +85,22 @@ expect 0 "tui --snapshot findings (vulnerable)" -- tui --snapshot findings --tar
 expect 2 "tui --snapshot unknown screen" -- tui --snapshot nonsense
 expect 2 "tui with both flavors" -- tui --target demo-escrow --snapshot help
 
+# Generic SBF specs: elf_path is relative to the repository root.
+cd "$ROOT"
+EX="examples/generic-sbf"
+expect 1 "sbf-run vulnerable example (check fails)" -- sbf-run --spec "$EX/escrow-vulnerable.json" --format text --sarif "$W/sbf.sarif"
+contains "$W/out" "INV-ACCT-001" "sbf-run finding"
+contains "$W/sbf.sarif" '"version": "2.1.0"' "sbf-run sarif"
+expect 0 "sbf-run corrected example" -- sbf-run --spec "$EX/escrow-corrected.json"
+contains "$W/out" '"findings": \[\]' "sbf-run json output"
+expect 2 "sbf-run unknown format" -- sbf-run --spec "$EX/escrow-corrected.json" --format xml
+expect 2 "sbf-run missing spec" -- sbf-run --spec "$W/nope.json"
+expect 2 "sbf-run malformed spec" -- sbf-run --spec "$W/bad.json"
+sed 's#target/sbf-programs/demo_escrow_corrected.so#target/sbf-programs/missing.so#' "$EX/escrow-corrected.json" >"$W/noelf.json"
+expect 3 "sbf-run with a missing program" -- sbf-run --spec "$W/noelf.json"
+N=$((N+1)); printf '{"op":"shutdown","id":1}\n' | "$BIN" sbf-session >"$W/out" 2>"$W/err"; got=$?
+if [ "$got" -eq 0 ] && grep -q '"ok":true' "$W/out"; then echo "[ok]   exit 0  sbf-session shutdown"; else echo "[FAIL] exit $got  sbf-session shutdown"; FAIL=$((FAIL+1)); fi
+
 # Setup-error exit code needs the program directory override, run it explicitly.
 N=$((N+1)); TOKENSCOPE_PROGRAM_DIR=/nonexistent "$BIN" run --target demo-escrow-corrected --no-suite --count 1 --out "$W/o9" >"$W/out" 2>"$W/err"; got=$?
 if [ "$got" -eq 3 ]; then echo "[ok]   exit 3  run with missing programs (explicit override)"; else echo "[FAIL] exit $got (want 3)  missing programs"; FAIL=$((FAIL+1)); fi

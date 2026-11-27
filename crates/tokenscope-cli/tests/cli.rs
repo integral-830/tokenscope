@@ -910,3 +910,58 @@ fn extended_invariants_and_profiles_suite_work_end_to_end() {
         tui_findings.stdout
     );
 }
+
+/// Run the binary from the workspace root, where generic SBF example specs resolve `elf_path`.
+fn tokenscope_at_root(args: &[&str]) -> Out {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let o = Command::new(env!("CARGO_BIN_EXE_tokenscope"))
+        .args(args)
+        .current_dir(root)
+        .env_remove("RUST_LOG")
+        .output()
+        .expect("spawn tokenscope");
+    Out {
+        code: o.status.code().expect("exit code"),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn sbf_run_evaluates_spec_checks_with_exit_codes_and_sarif() {
+    let dir = tempfile::tempdir().unwrap();
+    let sarif = dir.path().join("out.sarif");
+    let o = tokenscope_at_root(&[
+        "sbf-run",
+        "--spec",
+        "examples/generic-sbf/escrow-vulnerable.json",
+        "--format",
+        "text",
+        "--sarif",
+        s(&sarif),
+    ]);
+    assert_eq!(o.code, 1, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains("INV-ACCT-001 [error]"), "{}", o.stdout);
+    assert!(o.stdout.contains("observed 1000 vs 980"), "{}", o.stdout);
+    let log: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&sarif).unwrap()).unwrap();
+    assert_eq!(log["runs"][0]["results"][0]["ruleId"], "INV-ACCT-001");
+
+    let o = tokenscope_at_root(&[
+        "sbf-run",
+        "--spec",
+        "examples/generic-sbf/escrow-corrected.json",
+    ]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    let out: serde_json::Value = serde_json::from_str(&o.stdout).unwrap();
+    assert_eq!(out["findings"].as_array().map(Vec::len), Some(0));
+
+    let o = tokenscope_at_root(&[
+        "sbf-run",
+        "--spec",
+        "examples/generic-sbf/escrow-corrected.json",
+        "--format",
+        "xml",
+    ]);
+    assert_eq!(o.code, 2, "{}{}", o.stdout, o.stderr);
+}

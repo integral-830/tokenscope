@@ -1882,6 +1882,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mollusk-svm-programs-token"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10e13e302236aa8672a43b8a66fc17564b9a3c94bbb118e7239aef5c101b1068"
+dependencies = [
+ "mollusk-svm",
+ "solana-account",
+ "solana-program-pack",
+ "solana-pubkey 4.4.0",
+ "solana-rent",
+ "spl-associated-token-account-interface",
+ "spl-token-interface",
+]
+
+[[package]]
 name = "mollusk-svm-programs-token-2022"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4010,6 +4025,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spl-associated-token-account-interface"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6433917b60441d68d99a17e121d9db0ea15a9a69c0e5afa34649cf5ba12612f"
+dependencies = [
+ "solana-instruction 3.5.1",
+ "solana-pubkey 3.0.0",
+]
+
+[[package]]
 name = "spl-discriminator"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4441,6 +4466,8 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 name = "tokenscope-adapter"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "solana-instruction 3.5.1",
  "solana-pubkey 4.4.0",
  "solana-system-interface",
@@ -4493,6 +4520,7 @@ dependencies = [
  "log",
  "mollusk-svm",
  "mollusk-svm-programs-memo",
+ "mollusk-svm-programs-token",
  "mollusk-svm-programs-token-2022",
  "sha2 0.10.9",
  "solana-account",

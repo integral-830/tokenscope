@@ -14,7 +14,7 @@ pub use error::ExecError;
 pub use extensions::{MintExt, MintPlan};
 pub use forwarder::{demo_forwarder_program_id, forward_instruction};
 pub use harness::{
-    ExecReport, Harness, PointerView, TokenAccountView, derive_address, self_check, sha256_hex,
-    token_2022_elf_sha256,
+    AccountInspection, ExecReport, Harness, PointerView, SvmSnapshot, TokenAccountView,
+    derive_address, self_check, sha256_hex, token_2022_elf_sha256,
 };
 pub use hook::{EXECUTE_DISCRIMINATOR, HookCounter, HookFixture, demo_hook_program_id};
