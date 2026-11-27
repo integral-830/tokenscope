@@ -5,6 +5,18 @@ All notable changes to TokenScope are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+* **Extended invariants (`--extended`, 13 total):**
+  * Added 3 DeFi/math invariants (`INV-ZERO-001` dust/zero truncation, `INV-DILUT-001` asset-to-liability dilution, `INV-SYMM-001` asymmetric vault drains) and 4 Token-2022 policy invariants (`INV-PAUSE-001`, `INV-FREEZE-001`, `INV-CPI-001`, `INV-HOOK-001`).
+  * Added `extended_catalog()`, `InvariantRegistry::with_extended_invariants()`, `Engine::with_extended_invariants()`, and `--extended` CLI flag across `inspect`, `run`, `replay`, `minimize`, `tui`, and `RunConfig`.
+* **Combined mint profiles (`--suite profiles` / `--suite full`):**
+  * Added 5 multi-extension mint profile scenarios (`mint_profile_suite`) testing composite RWA interactions (`TransferFeeConfig`, `Pausable`, `DefaultAccountState`, `PermanentDelegate`, `CpiGuard`, `TransferHook`).
+* **Interactive TUI extended mode:**
+  * Added `--extended` flag and `x` hotkey to toggle between 6 core and 13 extended invariants live in `tokenscope-tui`.
+  * Updated `Dashboard`, `Scenarios`, `Token`, `Invariants`, `Reports`, and `Help` screens to render mint extensions, active registry evaluations/levels, and Markdown/SARIF artifact paths.
+
 ## [0.1.0] - 2026-11-19
 
 ### Added

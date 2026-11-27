@@ -73,6 +73,6 @@ Parsers are property-tested with arbitrary and mutated input, and fuzzed with li
 
 Setup problems, rejected instructions, invariant violations and suspected vulnerabilities are
 distinct outcome classes; harness problems never become findings. All command failures map to
-documented exit codes (`scripts/release-check.sh` checks 44 of them on the release binary). The TUI
+documented exit codes (`scripts/release-check.sh` checks 49 of them on the release binary). The TUI
 restores the terminal on quit, error, panic, SIGTERM and SIGHUP (`scripts/check-tui-terminal.py`);
 SIGKILL cannot be handled.

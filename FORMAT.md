@@ -73,8 +73,9 @@ mismatches. `tokenscope corpus replay` compares the actual run to `expect`.
 ```
 
 `seed` (default 0), `generated` (default 0, max 10,000), `builtin_suite` (default true, meaning the core suite),
-`suite` (`none | core | extensions | all`, overrides `builtin_suite`) and `strategy`
-(`random | extended | guided | stateful`, default `random`) are optional; unknown keys are rejected.
+`suite` (`none | core | extensions | profiles | all | full`, overrides `builtin_suite`), `strategy`
+(`random | extended | guided | stateful`, default `random`), and `extended` (bool, default `false`,
+enabling all 13 invariants) are optional; unknown keys are rejected.
 
 ## Limits
 

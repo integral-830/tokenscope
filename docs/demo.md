@@ -66,7 +66,7 @@ arrives (asserted in `crates/tokenscope-adapter/tests/escrow.rs`).
 
 ## 4. Replay and minimize
 
-Artifacts are written to `demo-out/<campaign-id>/{campaign.json,report.json,report.txt,findings/,scenarios/}`.
+Artifacts are written to `demo-out/<campaign-id>/{campaign.json,report.json,report.txt,report.md,report.sarif,findings/,scenarios/}`.
 
 ```sh
 tokenscope replay demo-out/<campaign-id>/scenarios/<scenario-id>.json        # exit 1 on the vulnerable target
@@ -129,11 +129,23 @@ Minimization works on extension findings: a noisy permanent-delegate failure red
 `crates/tokenscope-core/tests/replay_shrink.rs`). Guided and extension-aware generation:
 `tokenscope run --target demo-escrow --no-suite --count 30 --strategy guided`.
 
-## 7. TUI
+## 7. Combined mint profiles and extended invariants
 
 ```sh
-tokenscope tui                          # interactive; press ? for help, t toggles vulnerable/corrected
+tokenscope run --target demo-escrow-corrected --suite profiles --extended --count 0 --out demo-out   # exit code 1
+```
+
+This runs five multi-extension scenarios (such as RWA regulated mints combining `TransferFeeConfig`,
+`Pausable`, `DefaultAccountState`, and `PermanentDelegate`) against all 13 invariants: `INV-CUST-001`,
+`INV-SOLV-001`, and `INV-DILUT-001` fire on the permanent-delegate drain, and `INV-ZERO-001` catches
+micro-fee dust truncation.
+
+## 8. TUI
+
+```sh
+tokenscope tui                          # interactive; press ? for help, t toggles target, x toggles 6/13 invariants
 tokenscope tui --snapshot findings      # headless: prints one screen as text
+tokenscope tui --suite profiles --extended --snapshot invariants   # headless: inspect all 13 invariants on mint profiles
 ```
 
 ## What this does not show

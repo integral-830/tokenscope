@@ -240,3 +240,116 @@ fn second_target_adapter_can_be_executed_and_generates_valid_campaign() {
     assert_eq!(c.totals().passed, 1);
     assert_eq!(c.totals().invariant_violations, 0);
 }
+
+#[test]
+fn extended_invariants_evaluated_on_real_vulnerable_and_corrected_contracts() {
+    use tokenscope_scenarios::{extension_suite, mint_profile_suite};
+
+    let engine = Engine::with_extended_invariants();
+    assert_eq!(engine.catalog().len(), 13);
+
+    // 1. Real vulnerable contract breaches accounting & solvency invariants
+    let v_run = engine.run_scenario(&builtin_suite(VULN)[1]); // fee-2pct-deposit
+    let v_ids: Vec<_> = v_run
+        .findings
+        .iter()
+        .map(|f| f.invariant_id.as_str())
+        .collect();
+    assert!(v_ids.contains(&"INV-ACCT-001"), "missing ACCT: {v_ids:?}");
+    assert!(v_ids.contains(&"INV-SOLV-001"), "missing SOLV: {v_ids:?}");
+
+    // 2. Corrected contract fee-2pct-deposit and deposit-withdraw pass all 13 invariants
+    for idx in [1, 2] {
+        let c_run = engine.run_scenario(&builtin_suite(FIXED)[idx]);
+        assert_eq!(
+            c_run.outcome,
+            OutcomeClass::Pass,
+            "corrected suite[{idx}] should pass extended invariants: {:#?}",
+            c_run.findings
+        );
+    }
+
+    // 3. Corrected contract passes core 6 invariants on 100%-fee scenario,
+    //    but extended Engine catches INV-ZERO-001 truncation.
+    let core_100 = Engine::new().run_scenario(&builtin_suite(FIXED)[5]);
+    assert_eq!(core_100.outcome, OutcomeClass::Pass);
+    let ext_100 = engine.run_scenario(&builtin_suite(FIXED)[5]);
+    assert_eq!(ext_100.outcome, OutcomeClass::InvariantViolation);
+    assert!(
+        ext_100
+            .findings
+            .iter()
+            .any(|f| f.invariant_id == "INV-ZERO-001"),
+        "expected INV-ZERO-001 finding, got: {:#?}",
+        ext_100.findings
+    );
+
+    // 4. Extension policy invariants (PAUSE/FREEZE/CPI/HOOK) never false-positive on extension suite
+    let ext_camp = engine.run_campaign(FIXED, 0, &extension_suite(FIXED));
+    assert_eq!(ext_camp.totals().setup_errors, 0);
+    for run in &ext_camp.runs {
+        for f in &run.findings {
+            assert!(
+                !matches!(
+                    f.invariant_id.as_str(),
+                    "INV-PAUSE-001" | "INV-FREEZE-001" | "INV-CPI-001" | "INV-HOOK-001"
+                ),
+                "unexpected policy false positive in {}: {:#?}",
+                run.scenario.name,
+                f
+            );
+        }
+    }
+
+    // 5. Combined mint profile suite executes cleanly with extended invariants
+    let profiles = mint_profile_suite(FIXED);
+    let prof_camp = engine.run_campaign(FIXED, 0, &profiles);
+    assert_eq!(prof_camp.totals().setup_errors, 0);
+
+    let rwa = by_name(&prof_camp, "profile-rwa-regulated-mint");
+    assert_eq!(rwa.outcome, OutcomeClass::InvariantViolation);
+    assert!(
+        rwa.findings
+            .iter()
+            .any(|f| f.invariant_id == "INV-CUST-001")
+    );
+    assert!(
+        !rwa.findings
+            .iter()
+            .any(|f| matches!(f.invariant_id.as_str(), "INV-PAUSE-001" | "INV-FREEZE-001"))
+    );
+
+    let cpi_pause = by_name(&prof_camp, "profile-cpi-guarded-pausable-fee");
+    assert_eq!(
+        cpi_pause.outcome,
+        OutcomeClass::ExecutionFailure,
+        "{:#?}",
+        cpi_pause.findings
+    );
+    assert!(cpi_pause.findings.is_empty(), "{:#?}", cpi_pause.findings);
+
+    let dust = by_name(&prof_camp, "profile-micro-fee-dust-truncation");
+    assert_eq!(dust.outcome, OutcomeClass::InvariantViolation);
+    assert!(
+        dust.findings
+            .iter()
+            .any(|f| f.invariant_id == "INV-ZERO-001")
+    );
+
+    let freeze_wd = by_name(&prof_camp, "profile-freeze-source-allows-withdraw-dest");
+    assert_eq!(
+        freeze_wd.outcome,
+        OutcomeClass::ExecutionFailure,
+        "{:#?}",
+        freeze_wd.findings
+    );
+    assert!(freeze_wd.findings.is_empty(), "{:#?}", freeze_wd.findings);
+    let wd_trace = freeze_wd.trace.as_ref().expect("freeze withdraw trace");
+    assert_eq!(wd_trace.steps[3].action, Action::Withdraw);
+    assert_eq!(wd_trace.steps[3].status, tokenscope_model::StepStatus::Ok);
+    assert!(wd_trace.steps[3].before.depositor_frozen);
+
+    let hooked = by_name(&prof_camp, "profile-hooked-rwa-pause-freeze");
+    assert_eq!(hooked.outcome, OutcomeClass::ExecutionFailure);
+    assert!(hooked.findings.is_empty(), "{:#?}", hooked.findings);
+}

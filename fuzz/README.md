@@ -11,6 +11,7 @@ Targets (`fuzz/fuzz_targets/`), each a thin libFuzzer wrapper around a body in
 | `parse_corpus_case` | corpus-case parser | JSON | validates, round-trips |
 | `evaluate_trace` | invariant engine on arbitrary traces | JSON trace | no panic; findings only from violations |
 | `shrink_scenario` | shrinker | JSON scenario + synthetic predicate | result valid, satisfies predicate, never larger |
+| `reference_model_scenario` | `TokenReferenceModel` (`tokenscope-model`) | JSON scenario | balance bounds, fee ceiling, atomic rollback |
 | `replay_scenario` | real SVM execution (`--features engine`) | JSON scenario | outcome self-consistent; **not run here** (see below) |
 
 Seeds are real engine output (`cargo run -p tokenscope-fuzz-harness --example make_seeds`) plus

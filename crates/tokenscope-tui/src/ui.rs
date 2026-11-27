@@ -7,8 +7,10 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
-use tokenscope_invariants::{Verdict, catalog, evaluate};
-use tokenscope_model::{Action, OutcomeClass, RunRecord, Severity, Snapshot, StepStatus, Totals};
+use tokenscope_invariants::Verdict;
+use tokenscope_model::{
+    Action, MintExtension, OutcomeClass, RunRecord, Severity, Snapshot, StepStatus, Totals,
+};
 use tokenscope_report::render_finding_text;
 
 use crate::app::{App, Screen};
@@ -73,10 +75,16 @@ fn selectable(
 }
 
 fn fee_label(r: &RunRecord) -> String {
-    match r.scenario.mint.transfer_fee {
+    let fee = match r.scenario.mint.transfer_fee {
         None => "no fee ext".into(),
         Some(f) if f.maximum_fee == u64::MAX => format!("fee {}bp", f.basis_points),
         Some(f) => format!("fee {}bp max {}", f.basis_points, f.maximum_fee),
+    };
+    if r.scenario.extensions.is_empty() {
+        fee
+    } else {
+        let exts: Vec<_> = r.scenario.extensions.iter().map(|e| e.name()).collect();
+        format!("{fee} [{}]", exts.join(","))
     }
 }
 
@@ -174,7 +182,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Reports => reports(frame, app, body),
         Screen::Help => help(frame, app, body),
     }
-    let hint = "1-9/Tab screens  j/k move  / filter  r rerun  t toggle target  e export  p replay case  ? help  q quit";
+    let hint = "1-9/Tab screens  j/k move  / filter  r rerun  t target  x extended  e export  p replay  ? help  q quit";
     frame.render_widget(Paragraph::new(format!("{} | {hint}", app.status)), footer);
 }
 
@@ -209,8 +217,21 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(bottom);
     let t = live_totals(&app.runs);
+    let inv_count = app.invariant_catalog().len();
     let mut lines = vec![
         kv("target", app.opts.target.clone()),
+        kv("suite", format!("{:?}", app.opts.suite)),
+        kv(
+            "invariants",
+            format!(
+                "{} ({inv_count})",
+                if app.opts.extended {
+                    "extended"
+                } else {
+                    "core"
+                }
+            ),
+        ),
         kv("seed", app.opts.seed.to_string()),
         kv("duration", format!("{:.1}s", app.elapsed.as_secs_f64())),
         kv("executed", t.executed.to_string()),
@@ -391,17 +412,33 @@ fn token_config(frame: &mut Frame, app: &App, area: Rect) {
         plain(""),
         plain("extensions:"),
     ];
-    match m.transfer_fee {
-        Some(f) => {
-            lines.push(plain(format!(
-                "  TransferFeeConfig: {} bp, maximum fee {}",
-                f.basis_points, f.maximum_fee
-            )));
-            lines.push(plain(
-                "    fee = min(ceil(amount * bp / 10000), maximum fee)",
-            ));
-        }
-        None => lines.push(plain("  (none)")),
+    let mut has_ext = false;
+    if let Some(f) = m.transfer_fee {
+        has_ext = true;
+        lines.push(plain(format!(
+            "  TransferFeeConfig: {} bp, maximum fee {}",
+            f.basis_points, f.maximum_fee
+        )));
+        lines.push(plain(
+            "    fee = min(ceil(amount * bp / 10000), maximum fee)",
+        ));
+    }
+    for ext in &r.scenario.extensions {
+        has_ext = true;
+        let desc = match ext {
+            MintExtension::DefaultAccountState { frozen } => {
+                format!("DefaultAccountState: frozen={frozen}")
+            }
+            MintExtension::Pausable => "Pausable (pause authority: harness payer)".into(),
+            MintExtension::PermanentDelegate => {
+                "PermanentDelegate (delegate: harness issuer)".into()
+            }
+            MintExtension::TransferHook => "TransferHook (program: demo-hook)".into(),
+        };
+        lines.push(plain(format!("  {desc}")));
+    }
+    if !has_ext {
+        lines.push(plain("  (none)"));
     }
     lines.push(plain(""));
     lines.push(plain("authorities (harness-defined):"));
@@ -425,16 +462,39 @@ fn token_config(frame: &mut Frame, app: &App, area: Rect) {
 fn invariants(frame: &mut Frame, app: &App, area: Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
-    let cat = catalog();
+    let cat = app.invariant_catalog();
     let items: Vec<ListItem> = cat
         .iter()
         .map(|d| ListItem::new(format!("{} {}", d.id, d.name)))
         .collect();
-    let (list, mut st) = selectable(items, app.invariant_sel, "Invariants".into());
+    let title = format!(
+        "Invariants ({} {})",
+        cat.len(),
+        if app.opts.extended {
+            "extended"
+        } else {
+            "core; x=13"
+        }
+    );
+    let (list, mut st) = selectable(items, app.invariant_sel, title);
     frame.render_stateful_widget(list, left, &mut st);
-    let d = cat[app.invariant_sel.min(cat.len() - 1)];
+    let Some(d) = cat
+        .get(app.invariant_sel.min(cat.len().saturating_sub(1)))
+        .copied()
+    else {
+        frame.render_widget(
+            para(
+                vec![plain("No invariants configured.")],
+                "Definition and observed behavior",
+                app.scroll,
+            ),
+            right,
+        );
+        return;
+    };
     let mut lines = vec![
         kv("id", d.id),
+        kv("level", format!("{:?}", d.level)),
         kv("name", d.name),
         kv("definition", d.description),
         kv("expected", d.expected),
@@ -450,7 +510,12 @@ fn invariants(frame: &mut Frame, app: &App, area: Rect) {
     {
         Some((r, t)) => {
             lines.push(kv("verdicts for scenario", r.scenario.name.clone()));
-            for e in evaluate(t).into_iter().filter(|e| e.invariant_id == d.id) {
+            let reg = app.invariant_registry();
+            for e in reg
+                .evaluate(t)
+                .into_iter()
+                .filter(|e| e.invariant_id == d.id)
+            {
                 let (txt, color) = match &e.verdict {
                     Verdict::Held => ("held".to_string(), Color::Green),
                     Verdict::NotApplicable => ("not applicable".to_string(), Color::Gray),
@@ -556,6 +621,14 @@ fn reports(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(plain(format!("  JSON report: {}", a.report_json.display())));
             lines.push(plain(format!("  text report: {}", a.report_text.display())));
             lines.push(plain(format!(
+                "  MD report:   {}",
+                a.report_markdown.display()
+            )));
+            lines.push(plain(format!(
+                "  SARIF:       {}",
+                a.report_sarif.display()
+            )));
+            lines.push(plain(format!(
                 "  findings:    {} file(s)",
                 a.findings.len()
             )));
@@ -583,6 +656,7 @@ fn reports(frame: &mut Frame, app: &App, area: Rect) {
 
 fn help(frame: &mut Frame, app: &App, area: Rect) {
     let o = &app.opts;
+    let inv_ids: Vec<_> = app.invariant_catalog().into_iter().map(|d| d.id).collect();
     let lines = vec![
         plain("Settings"),
         kv("  target", o.target.clone()),
@@ -591,6 +665,14 @@ fn help(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} / {}", o.seed, o.count),
         ),
         kv("  built-in suite", format!("{:?}", o.suite)),
+        kv(
+            "  invariants",
+            format!(
+                "{} ({})",
+                if o.extended { "extended" } else { "core" },
+                inv_ids.len()
+            ),
+        ),
         kv("  output dir", o.out_dir.display().to_string()),
         kv("  corpus dir", o.corpus_dir.display().to_string()),
         plain(""),
@@ -598,15 +680,21 @@ fn help(frame: &mut Frame, app: &App, area: Rect) {
         plain(
             "  Real execution of the system program, the bundled Token-2022 ELF and the demo escrow in the Mollusk SVM",
         ),
-        plain("  Token-2022 TransferFeeConfig: rounding, maximum-fee cap, zero and 100% fees"),
-        plain("  Invariants: INV-ACCT-001, INV-SOLV-001, INV-ATOM-001, INV-CONS-001, INV-AUTH-001"),
+        plain(
+            "  Token-2022: TransferFeeConfig, Pausable, PermanentDelegate, DefaultAccountState, CPI Guard, TransferHook",
+        ),
+        plain(format!(
+            "  Active invariants ({}): {}",
+            inv_ids.len(),
+            inv_ids.join(", ")
+        )),
         plain(""),
         plain("Limitations"),
         plain(
-            "  Only the demo escrow target; Token-2022 coverage is transfer fees plus freeze/thaw of token accounts",
+            "  Only the demo escrow target (plus demo-hook and demo-forwarder fixtures); confidential transfers are out of scope",
         ),
         plain(
-            "  Only the depositor-signature authorization path is modeled; a violation is not proof of exploitability",
+            "  Only the depositor-signature, account-identity and initialization checks are modeled; a violation is not proof of exploitability",
         ),
         plain(
             "  The Token-2022 ELF is a mainnet snapshot bundled by mollusk-svm-programs-token-2022",
@@ -620,7 +708,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect) {
             "  PgUp PgDn  scroll details (page lists)       /  filter scenarios (Enter keeps, Esc clears)",
         ),
         plain(
-            "  r  re-run   t  toggle vulnerable/corrected   e  export artifacts   p/Enter  replay corpus case",
+            "  r  re-run   t  toggle vulnerable/corrected   x  toggle 6/13 invariants   e  export   p/Enter  replay case",
         ),
         plain("  ?  help     q or Ctrl-C  quit"),
     ];

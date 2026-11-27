@@ -1,18 +1,21 @@
 //! Orchestration of the TokenScope pipeline:
 //! `scenario -> real SVM execution -> invariant checking -> findings`.
 
-use std::path::PathBuf;
+use std::{
+    io,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 pub use tokenscope_adapter::TargetAdapter;
 use tokenscope_adapter::{EscrowAdapter, EscrowFlavor};
-pub use tokenscope_invariants::{FnInvariant, Invariant, InvariantRegistry};
-use tokenscope_invariants::{classify, evaluate, findings};
+use tokenscope_invariants::classify;
+pub use tokenscope_invariants::{FnInvariant, Invariant, InvariantDef, InvariantRegistry};
 use tokenscope_model::{Campaign, Finding, OutcomeClass, RunRecord, Scenario};
 use tokenscope_shrinker::{ShrinkConfig, ShrinkError, ShrinkReport, shrink};
 
 pub mod corpus;
-
-use std::{io, io::Read, path::Path};
 
 /// Largest JSON document (scenario, finding, campaign, trace, corpus case, run config) the tool
 /// will read: 32 MiB. Larger inputs are rejected before parsing to bound memory use.
@@ -53,22 +56,79 @@ pub struct Replay {
 }
 
 /// Runs scenarios and campaigns.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct Engine {
     program_dir: Option<PathBuf>,
+    registry: Arc<InvariantRegistry>,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            program_dir: None,
+            registry: Arc::new(InvariantRegistry::default()),
+        }
+    }
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("program_dir", &self.program_dir)
+            .field("invariants", &self.registry.len())
+            .finish()
+    }
 }
 
 impl Engine {
-    /// Engine that locates built programs automatically.
+    /// Engine that locates built programs automatically and checks the 6 core invariants.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Engine configured with all 13 extended invariants (core 6 + ZERO/DILUT/SYMM + PAUSE/FREEZE/CPI/HOOK).
+    pub fn with_extended_invariants() -> Self {
+        Self {
+            program_dir: None,
+            registry: Arc::new(InvariantRegistry::with_extended_invariants()),
+        }
+    }
+
+    /// Engine using a caller-supplied [`InvariantRegistry`].
+    pub fn with_invariants(registry: InvariantRegistry) -> Self {
+        Self {
+            program_dir: None,
+            registry: Arc::new(registry),
+        }
     }
 
     /// Engine that reads built programs from `dir`.
     pub fn with_program_dir(dir: impl Into<PathBuf>) -> Self {
         Self {
             program_dir: Some(dir.into()),
+            registry: Arc::new(InvariantRegistry::default()),
         }
+    }
+
+    /// Engine that reads built programs from `dir` and uses `registry`.
+    pub fn with_program_dir_and_invariants(
+        dir: impl Into<PathBuf>,
+        registry: InvariantRegistry,
+    ) -> Self {
+        Self {
+            program_dir: Some(dir.into()),
+            registry: Arc::new(registry),
+        }
+    }
+
+    /// Definitions of invariants currently enforced by this engine.
+    pub fn catalog(&self) -> Vec<InvariantDef> {
+        self.registry.catalog()
+    }
+
+    /// Borrow the underlying invariant registry.
+    pub fn registry(&self) -> &InvariantRegistry {
+        &self.registry
     }
 
     fn adapter(&self, flavor: EscrowFlavor) -> EscrowAdapter {
@@ -96,13 +156,13 @@ impl Engine {
         match adapter.run(scenario) {
             Err(e) => setup_error(e.to_string()),
             Ok(trace) => {
-                let evaluations = evaluate(&trace);
+                let evaluations = self.registry.evaluate(&trace);
                 RunRecord {
                     scenario: scenario.clone(),
                     scenario_id,
                     outcome: classify(&trace, &evaluations),
                     setup_error: None,
-                    findings: findings(scenario, &trace, &evaluations),
+                    findings: self.registry.findings(scenario, &trace, &evaluations),
                     trace: Some(trace),
                 }
             }

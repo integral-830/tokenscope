@@ -1,8 +1,12 @@
 //! Background campaign runner. Execution happens on a worker thread; the UI only receives events.
 
-use std::{path::PathBuf, sync::mpsc, thread};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
+};
 
-use tokenscope_core::Engine;
+use tokenscope_core::{Engine, InvariantRegistry};
 use tokenscope_model::{Campaign, RunRecord, Scenario};
 use tokenscope_scenarios::{SuiteSelection, generate};
 
@@ -18,6 +22,19 @@ pub enum RunEvent {
     Run(Box<RunRecord>),
     /// The whole campaign finished.
     Finished(Box<Campaign>),
+}
+
+/// Construct an [`Engine`] matching the configured program directory and invariant mode.
+pub(crate) fn build_engine(program_dir: Option<&Path>, extended: bool) -> Engine {
+    let registry = if extended {
+        InvariantRegistry::with_extended_invariants()
+    } else {
+        InvariantRegistry::default()
+    };
+    match program_dir {
+        Some(d) => Engine::with_program_dir_and_invariants(d.to_path_buf(), registry),
+        None => Engine::with_invariants(registry),
+    }
 }
 
 /// Scenarios a campaign runs: the built-in suite (optional) plus seeded ones.
@@ -39,14 +56,12 @@ pub fn spawn(
     seed: u64,
     count: usize,
     suite: SuiteSelection,
+    extended: bool,
     program_dir: Option<PathBuf>,
 ) -> mpsc::Receiver<RunEvent> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let engine = match program_dir {
-            Some(d) => Engine::with_program_dir(d),
-            None => Engine::new(),
-        };
+        let engine = build_engine(program_dir.as_deref(), extended);
         let scenarios = build_scenarios(&target, seed, count, suite);
         if tx
             .send(RunEvent::Started {

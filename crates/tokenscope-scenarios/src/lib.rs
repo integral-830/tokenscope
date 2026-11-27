@@ -200,18 +200,24 @@ pub enum SuiteSelection {
     Core,
     /// Extension, authorization and boundary scenarios ([`extension_suite`]).
     Extensions,
-    /// Both suites.
+    /// Combined realistic Token-2022 mint profile scenarios ([`mint_profile_suite`]).
+    Profiles,
+    /// Core and extension suites (24 scenarios, backward-compatible default).
     All,
+    /// Core, extension, and combined mint profile suites.
+    Full,
 }
 
 impl SuiteSelection {
-    /// Parse `none | core | extensions | all`.
+    /// Parse `none | core | extensions | profiles | all | full`.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "none" => Some(Self::None),
             "core" => Some(Self::Core),
             "extensions" => Some(Self::Extensions),
+            "profiles" => Some(Self::Profiles),
             "all" => Some(Self::All),
+            "full" => Some(Self::Full),
             _ => Option::None,
         }
     }
@@ -219,14 +225,106 @@ impl SuiteSelection {
     /// The selected scenarios for `target`.
     pub fn scenarios(self, target: &str) -> Vec<Scenario> {
         let mut v = Vec::new();
-        if matches!(self, Self::Core | Self::All) {
+        if matches!(self, Self::Core | Self::All | Self::Full) {
             v.extend(builtin_suite(target));
         }
-        if matches!(self, Self::Extensions | Self::All) {
+        if matches!(self, Self::Extensions | Self::All | Self::Full) {
             v.extend(extension_suite(target));
+        }
+        if matches!(self, Self::Profiles | Self::Full) {
+            v.extend(mint_profile_suite(target));
         }
         v
     }
+}
+
+/// Combined realistic Token-2022 mint profile scenarios exercising multi-extension interactions
+/// (e.g., regulated RWA mints combining TransferFee + Pausable + DefaultAccountState + PermanentDelegate).
+pub fn mint_profile_suite(target: &str) -> Vec<Scenario> {
+    let t = target;
+    let max = u64::MAX;
+    vec![
+        ext(
+            "profile-rwa-regulated-mint",
+            t,
+            Some((25, 10_000)),
+            vec![
+                MintExtension::Pausable,
+                MintExtension::DefaultAccountState { frozen: true },
+                MintExtension::PermanentDelegate,
+            ],
+            100_000,
+            vec![
+                dep(1_000),
+                Action::ThawVault,
+                Action::Pause,
+                dep(1_000),
+                Action::Resume,
+                dep(10_000),
+                Action::PermanentDelegateDrain { amount: 2_000 },
+            ],
+        ),
+        ext(
+            "profile-cpi-guarded-pausable-fee",
+            t,
+            Some((200, max)),
+            vec![MintExtension::Pausable],
+            20_000,
+            vec![
+                Action::EnableCpiGuard,
+                Action::ApproveDelegate { amount: 1_000 },
+                dep(2_000),
+                Action::DelegateTransfer { amount: 500 },
+                Action::Pause,
+                Action::DelegateTransfer { amount: 200 },
+                Action::Resume,
+                Action::DisableCpiGuard,
+                dep(2_000),
+                Action::Withdraw,
+            ],
+        ),
+        ext(
+            "profile-hooked-rwa-pause-freeze",
+            t,
+            Some((50, max)),
+            vec![
+                MintExtension::TransferHook,
+                MintExtension::Pausable,
+                MintExtension::DefaultAccountState { frozen: true },
+            ],
+            10_000,
+            vec![
+                dep(1_000),
+                Action::ThawVault,
+                Action::Pause,
+                dep(1_000),
+                Action::Resume,
+                dep(1_000),
+            ],
+        ),
+        ext(
+            "profile-micro-fee-dust-truncation",
+            t,
+            Some((100, max)),
+            vec![MintExtension::Pausable],
+            10_000,
+            vec![dep(500), dep(1)],
+        ),
+        ext(
+            "profile-freeze-source-allows-withdraw-dest",
+            t,
+            None,
+            vec![MintExtension::Pausable],
+            10_000,
+            vec![
+                dep(1_000),
+                Action::FreezeDepositor,
+                dep(500),
+                Action::Withdraw,
+                Action::ThawDepositor,
+            ],
+        ),
+    ]
 }
 
 /// Extension, authorization and boundary scenarios. Note that `permanent-delegate-drains-vault`
@@ -464,24 +562,38 @@ mod suite_tests {
     fn suites_are_valid_disjoint_and_selectable() {
         let core = builtin_suite("t");
         let ext = extension_suite("t");
+        let profiles = mint_profile_suite("t");
         assert_eq!(
             core.len(),
             14,
             "the original suite is unchanged (IDs depend on it)"
         );
         assert_eq!(ext.len(), 10);
-        let mut ids: Vec<_> = core.iter().chain(&ext).map(Scenario::id).collect();
-        for s in core.iter().chain(&ext) {
+        assert_eq!(profiles.len(), 5);
+        let mut ids: Vec<_> = core
+            .iter()
+            .chain(&ext)
+            .chain(&profiles)
+            .map(Scenario::id)
+            .collect();
+        for s in core.iter().chain(&ext).chain(&profiles) {
             s.validate().unwrap();
         }
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 24, "no duplicate scenarios across suites");
+        assert_eq!(ids.len(), 29, "no duplicate scenarios across suites");
         assert_eq!(SuiteSelection::All.scenarios("t").len(), 24);
+        assert_eq!(SuiteSelection::Full.scenarios("t").len(), 29);
         assert_eq!(SuiteSelection::Core.scenarios("t"), core);
         assert_eq!(SuiteSelection::Extensions.scenarios("t"), ext);
+        assert_eq!(SuiteSelection::Profiles.scenarios("t"), profiles);
         assert!(SuiteSelection::None.scenarios("t").is_empty());
         assert_eq!(SuiteSelection::parse("all"), Some(SuiteSelection::All));
+        assert_eq!(
+            SuiteSelection::parse("profiles"),
+            Some(SuiteSelection::Profiles)
+        );
+        assert_eq!(SuiteSelection::parse("full"), Some(SuiteSelection::Full));
         assert_eq!(SuiteSelection::parse("everything"), None);
     }
 }

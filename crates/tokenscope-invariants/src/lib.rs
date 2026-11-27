@@ -123,9 +123,106 @@ pub const CUST_001: InvariantDef = InvariantDef {
     level: InvariantLevel::Token2022,
 };
 
-/// All invariants implemented by this crate.
+/// Truncation and zero-rounding: non-zero inputs must not yield zero tokens or zero credits.
+pub const ZERO_001: InvariantDef = InvariantDef {
+    id: "INV-ZERO-001",
+    name: "Non-zero operation does not truncate to zero value",
+    description: "A successful step with a non-zero input amount must not result in 0 tokens credited, transferred, or received, which leads to share burning with zero payout or unbacked state mutations.",
+    preconditions: &["the step succeeded", "the step has a non-zero input amount"],
+    expected: "delta(credited_or_transferred) > 0",
+    exceptions: &["steps that are intentionally zero-amount no-ops"],
+    level: InvariantLevel::TargetSpecific,
+};
+
+/// Share dilution: the ratio of vault assets to recorded liabilities must never decrease.
+pub const DILUT_001: InvariantDef = InvariantDef {
+    id: "INV-DILUT-001",
+    name: "Asset-to-liability exchange rate does not decrease",
+    description: "After every successful step, the ratio of vault assets to recorded liabilities must not decrease, ensuring existing participants are never diluted.",
+    preconditions: &["the step succeeded", "prior recorded liability is positive"],
+    expected: "vault_amount_after * recorded_before >= vault_amount_before * recorded_after",
+    exceptions: &["authorized admin fee extractions with explicit governance parameters"],
+    level: InvariantLevel::TargetSpecific,
+};
+
+/// Symmetric path safety: parallel state-reducing methods must maintain equivalent balance clamp rules.
+pub const SYMM_001: InvariantDef = InvariantDef {
+    id: "INV-SYMM-001",
+    name: "Symmetric state-reducing operations maintain equivalent clamps",
+    description: "Any reduction in recorded liabilities must not exceed the reduction in real vault holdings, preventing one-sided bounds clamps and desynchronized accounting.",
+    preconditions: &["the step succeeded", "recorded liabilities decreased"],
+    expected: "delta(vault_amount) matches or bounds delta(escrow_recorded)",
+    exceptions: &["none: symmetric operations must adhere to conservative bounds"],
+    level: InvariantLevel::TargetSpecific,
+};
+
+/// Pausable enforcement: paused mints reject token movement and mutate no state.
+pub const PAUSE_001: InvariantDef = InvariantDef {
+    id: "INV-PAUSE-001",
+    name: "Paused mint rejects token transfers without state mutation",
+    description: "While a Pausable mint is paused, deposits, withdrawals, delegate transfers, and permanent-delegate drains must fail atomically without moving tokens or altering state.",
+    preconditions: &[
+        "the mint's paused flag before the step is true",
+        "the step is a deposit, withdraw, delegate transfer, or permanent-delegate drain",
+    ],
+    expected: "step fails and before == after",
+    exceptions: &[
+        "ApproveDelegate, FreezeAccount, Pause, and Resume remain callable per Token-2022 semantics",
+    ],
+    level: InvariantLevel::Token2022,
+};
+
+/// Freeze enforcement: frozen token accounts reject transfers involving them.
+pub const FREEZE_001: InvariantDef = InvariantDef {
+    id: "INV-FREEZE-001",
+    name: "Frozen account cannot transfer or receive tokens",
+    description: "Transfers sourcing from or targeting a frozen depositor source or frozen vault must fail atomically without moving tokens or updating escrow accounting.",
+    preconditions: &[
+        "depositor_source is frozen (for deposit or delegate transfer) OR vault is frozen (for deposit, withdraw, or permanent-delegate drain)",
+    ],
+    expected: "step fails and before == after",
+    exceptions: &[
+        "withdrawals to withdraw_destination remain valid when only depositor_source is frozen and vault is thawed",
+    ],
+    level: InvariantLevel::Token2022,
+};
+
+/// CPI Guard enforcement: owner-signed CPI transfers from a guarded source are blocked.
+pub const CPI_001: InvariantDef = InvariantDef {
+    id: "INV-CPI-001",
+    name: "CPI Guard blocks owner-signed CPI transfers",
+    description: "When CPI Guard is enabled on the depositor source account, non-zero owner-signed deposits through an escrow CPI must be rejected with zero state mutation.",
+    preconditions: &[
+        "source_cpi_guard is true before the step",
+        "the step is a non-zero Deposit through the escrow CPI",
+    ],
+    expected: "step fails and before == after",
+    exceptions: &["direct owner instructions and approved delegate transfers remain allowed"],
+    level: InvariantLevel::Token2022,
+};
+
+/// Transfer Hook integrity: active TransferHook mints execute hooks on successful transfers and never increment on failure.
+pub const HOOK_001: InvariantDef = InvariantDef {
+    id: "INV-HOOK-001",
+    name: "TransferHook mint invokes hook on transfer and reverts on failure",
+    description: "On mints with TransferHook enabled, successful non-zero token movements must invoke the hook (hook_invocations increases), and failed or non-transfer steps must leave hook_invocations unchanged.",
+    preconditions: &["the mint has a configured TransferHook observer (hook_invocations is Some)"],
+    expected: "hook_invocations increases on successful non-zero transfers and is unchanged otherwise",
+    exceptions: &["zero-amount no-ops that return before invoking token transfer"],
+    level: InvariantLevel::Token2022,
+};
+
+/// All invariants implemented by this crate (core set).
 pub fn catalog() -> [InvariantDef; 6] {
     [ACCT_001, SOLV_001, ATOM_001, CONS_001, AUTH_001, CUST_001]
+}
+
+/// Extended catalog of all 13 invariants (core 6 + advanced DeFi & Token-2022 policy invariants).
+pub fn extended_catalog() -> [InvariantDef; 13] {
+    [
+        ACCT_001, SOLV_001, ATOM_001, CONS_001, AUTH_001, CUST_001, ZERO_001, DILUT_001, SYMM_001,
+        PAUSE_001, FREEZE_001, CPI_001, HOOK_001,
+    ]
 }
 
 /// Result of evaluating one invariant on one step.
@@ -283,6 +380,257 @@ fn cust_001(step: &StepRecord) -> Verdict {
     }
 }
 
+fn zero_001(step: &StepRecord) -> Verdict {
+    if step.status != StepStatus::Ok {
+        return Verdict::NotApplicable;
+    }
+    match step.action {
+        Action::Deposit { amount } if amount > 0 => {
+            let credit = d(step.after.escrow_recorded, step.before.escrow_recorded);
+            let vault_gain = d(step.after.vault_amount, step.before.vault_amount);
+            if credit <= 0 || vault_gain <= 0 {
+                Verdict::Violated {
+                    observed: format!(
+                        "non-zero deposit of {amount} resulted in credit {credit} and vault gain {vault_gain}"
+                    ),
+                }
+            } else {
+                Verdict::Held
+            }
+        }
+        Action::Withdraw if step.before.escrow_recorded > 0 => {
+            let payout = d(
+                step.after.destination_balance,
+                step.before.destination_balance,
+            );
+            if payout <= 0 {
+                Verdict::Violated {
+                    observed: format!(
+                        "withdrawal against {} recorded owed resulted in 0 destination payout",
+                        step.before.escrow_recorded
+                    ),
+                }
+            } else {
+                Verdict::Held
+            }
+        }
+        _ => Verdict::NotApplicable,
+    }
+}
+
+fn dilut_001(step: &StepRecord) -> Verdict {
+    if step.status != StepStatus::Ok {
+        return Verdict::NotApplicable;
+    }
+    let b = &step.before;
+    let a = &step.after;
+    if b.escrow_recorded == 0 || a.escrow_recorded == 0 {
+        return Verdict::NotApplicable;
+    }
+    // Check if vault_after / recorded_after >= vault_before / recorded_before
+    // <=> vault_after * recorded_before >= vault_before * recorded_after
+    let lhs = u128::from(a.vault_amount) * u128::from(b.escrow_recorded);
+    let rhs = u128::from(b.vault_amount) * u128::from(a.escrow_recorded);
+    if lhs >= rhs {
+        Verdict::Held
+    } else {
+        Verdict::Violated {
+            observed: format!(
+                "exchange rate diluted: before={}/{} ({:.6}), after={}/{} ({:.6})",
+                b.vault_amount,
+                b.escrow_recorded,
+                b.vault_amount as f64 / b.escrow_recorded as f64,
+                a.vault_amount,
+                a.escrow_recorded,
+                a.vault_amount as f64 / a.escrow_recorded as f64
+            ),
+        }
+    }
+}
+
+fn symm_001(step: &StepRecord) -> Verdict {
+    if step.status != StepStatus::Ok {
+        return Verdict::NotApplicable;
+    }
+    let b = &step.before;
+    let a = &step.after;
+    if a.escrow_recorded >= b.escrow_recorded {
+        return Verdict::NotApplicable;
+    }
+    let liability_reduction = b.escrow_recorded - a.escrow_recorded;
+    let vault_reduction = b.vault_amount.saturating_sub(a.vault_amount);
+    if vault_reduction > liability_reduction {
+        Verdict::Violated {
+            observed: format!(
+                "asymmetric drain: vault reduced by {vault_reduction} but recorded liability reduced by only {liability_reduction}"
+            ),
+        }
+    } else {
+        Verdict::Held
+    }
+}
+
+fn pause_001(step: &StepRecord) -> Verdict {
+    if step.before.mint_paused != Some(true) {
+        return Verdict::NotApplicable;
+    }
+    let blocked_op = match step.action {
+        Action::Deposit { amount }
+        | Action::DelegateTransfer { amount }
+        | Action::PermanentDelegateDrain { amount } => amount > 0,
+        Action::Withdraw => {
+            step.before.escrow_recorded > 0 || step.after.vault_amount < step.before.vault_amount
+        }
+        _ => false,
+    };
+    if !blocked_op {
+        return Verdict::NotApplicable;
+    }
+    if step.status == StepStatus::Ok {
+        Verdict::Violated {
+            observed: format!(
+                "{:?} succeeded while mint was paused (vault {} -> {}, recorded {} -> {})",
+                step.action,
+                step.before.vault_amount,
+                step.after.vault_amount,
+                step.before.escrow_recorded,
+                step.after.escrow_recorded
+            ),
+        }
+    } else if step.before != step.after {
+        Verdict::Violated {
+            observed: format!(
+                "paused {:?} mutated state despite rejection: before={:?} after={:?}",
+                step.action, step.before, step.after
+            ),
+        }
+    } else {
+        Verdict::Held
+    }
+}
+
+fn freeze_001(step: &StepRecord) -> Verdict {
+    let blocked_op = match step.action {
+        Action::Deposit { amount } if amount > 0 => {
+            step.before.depositor_frozen || step.before.vault_frozen
+        }
+        Action::DelegateTransfer { amount } if amount > 0 => step.before.depositor_frozen,
+        Action::Withdraw => {
+            step.before.vault_frozen
+                && (step.before.escrow_recorded > 0
+                    || step.after.vault_amount < step.before.vault_amount)
+        }
+        Action::PermanentDelegateDrain { amount } if amount > 0 => step.before.vault_frozen,
+        _ => false,
+    };
+    if !blocked_op {
+        return Verdict::NotApplicable;
+    }
+    if step.status == StepStatus::Ok {
+        Verdict::Violated {
+            observed: format!(
+                "{:?} succeeded with frozen account (depositor_frozen={}, vault_frozen={}): vault {} -> {}",
+                step.action,
+                step.before.depositor_frozen,
+                step.before.vault_frozen,
+                step.before.vault_amount,
+                step.after.vault_amount
+            ),
+        }
+    } else if step.before != step.after {
+        Verdict::Violated {
+            observed: format!(
+                "frozen {:?} mutated state despite rejection: before={:?} after={:?}",
+                step.action, step.before, step.after
+            ),
+        }
+    } else {
+        Verdict::Held
+    }
+}
+
+fn cpi_001(step: &StepRecord) -> Verdict {
+    if !step.before.source_cpi_guard {
+        return Verdict::NotApplicable;
+    }
+    let Action::Deposit { amount } = step.action else {
+        return Verdict::NotApplicable;
+    };
+    if amount == 0 {
+        return Verdict::NotApplicable;
+    }
+    if step.status == StepStatus::Ok {
+        Verdict::Violated {
+            observed: format!(
+                "owner-signed CPI Deposit({amount}) succeeded while CPI Guard was enabled on source (vault {} -> {}, depositor {} -> {})",
+                step.before.vault_amount,
+                step.after.vault_amount,
+                step.before.depositor_balance,
+                step.after.depositor_balance
+            ),
+        }
+    } else if step.before != step.after {
+        Verdict::Violated {
+            observed: format!(
+                "CPI-guarded Deposit({amount}) mutated state despite rejection: before={:?} after={:?}",
+                step.before, step.after
+            ),
+        }
+    } else {
+        Verdict::Held
+    }
+}
+
+fn hook_001(step: &StepRecord) -> Verdict {
+    let (Some(before_hooks), Some(after_hooks)) =
+        (step.before.hook_invocations, step.after.hook_invocations)
+    else {
+        return Verdict::NotApplicable;
+    };
+    if matches!(step.status, StepStatus::Failed { .. }) {
+        return if after_hooks != before_hooks {
+            Verdict::Violated {
+                observed: format!(
+                    "failed step {:?} mutated hook_invocations from {before_hooks} to {after_hooks}",
+                    step.action
+                ),
+            }
+        } else {
+            Verdict::Held
+        };
+    }
+    let expects_hook = match step.action {
+        Action::Deposit { amount }
+        | Action::DelegateTransfer { amount }
+        | Action::PermanentDelegateDrain { amount } => amount > 0,
+        Action::Withdraw => {
+            step.before.escrow_recorded > 0 || step.after.vault_amount < step.before.vault_amount
+        }
+        _ => false,
+    };
+    if expects_hook {
+        if after_hooks > before_hooks {
+            Verdict::Held
+        } else {
+            Verdict::Violated {
+                observed: format!(
+                    "TransferHook mint completed {:?} without invoking transfer hook (hook_invocations stayed at {after_hooks})",
+                    step.action
+                ),
+            }
+        }
+    } else if after_hooks != before_hooks {
+        Verdict::Violated {
+            observed: format!(
+                "non-transfer step {:?} unexpectedly changed hook_invocations from {before_hooks} to {after_hooks}",
+                step.action
+            ),
+        }
+    } else {
+        Verdict::NotApplicable
+    }
+}
+
 /// Trait for an invariant implementation.
 pub trait Invariant: Send + Sync {
     /// Invariant definition metadata.
@@ -336,6 +684,19 @@ impl Default for InvariantRegistry {
 }
 
 impl InvariantRegistry {
+    /// Create a registry with all 13 invariants (core 6 + ZERO/DILUT/SYMM + PAUSE/FREEZE/CPI/HOOK).
+    pub fn with_extended_invariants() -> Self {
+        let mut reg = Self::default();
+        reg.register(FnInvariant::new(ZERO_001, zero_001));
+        reg.register(FnInvariant::new(DILUT_001, dilut_001));
+        reg.register(FnInvariant::new(SYMM_001, symm_001));
+        reg.register(FnInvariant::new(PAUSE_001, pause_001));
+        reg.register(FnInvariant::new(FREEZE_001, freeze_001));
+        reg.register(FnInvariant::new(CPI_001, cpi_001));
+        reg.register(FnInvariant::new(HOOK_001, hook_001));
+        reg
+    }
+
     /// Create an empty registry with no invariants.
     pub fn empty() -> Self {
         Self {
@@ -478,6 +839,34 @@ fn severity_for(id: &str) -> (Severity, &'static str) {
         "INV-CONS-001" => (
             Severity::Medium,
             "Tokens are not conserved under the documented fee semantics, which suggests an accounting error in the observation or the program.",
+        ),
+        "INV-ZERO-001" => (
+            Severity::High,
+            "Non-zero user action resulted in 0 tokens transferred or credited, causing loss of user funds due to rounding truncation.",
+        ),
+        "INV-DILUT-001" => (
+            Severity::High,
+            "Asset-to-liability exchange rate decreased, diluting existing depositors' claims and enabling liquidity extraction.",
+        ),
+        "INV-SYMM-001" => (
+            Severity::High,
+            "Asymmetric state reduction observed: vault assets decreased faster than recorded liabilities.",
+        ),
+        "INV-PAUSE-001" => (
+            Severity::High,
+            "A token movement succeeded or mutated state while the Pausable mint was paused, bypassing mint-level emergency halt controls.",
+        ),
+        "INV-FREEZE-001" => (
+            Severity::High,
+            "A token transfer succeeded or mutated state while the source or vault account was frozen, bypassing Token-2022 freeze enforcement.",
+        ),
+        "INV-CPI-001" => (
+            Severity::High,
+            "An owner-signed CPI deposit bypassed CPI Guard protection on the depositor source account.",
+        ),
+        "INV-HOOK-001" => (
+            Severity::High,
+            "A TransferHook mint failed to invoke its hook on transfer or leaked hook state on a failed instruction.",
         ),
         _ => (
             Severity::Low,

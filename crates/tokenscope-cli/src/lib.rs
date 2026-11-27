@@ -58,6 +58,9 @@ pub enum Command {
         /// Target (`demo-escrow-vulnerable`, `demo-escrow-corrected`); default: all.
         #[arg(long)]
         target: Option<String>,
+        /// Also list the extended DeFi and Token-2022 policy invariants (13 total).
+        #[arg(long)]
+        extended: bool,
     },
     /// Run a campaign (built-in suite plus seeded scenarios).
     Run {
@@ -79,12 +82,15 @@ pub enum Command {
         /// Corpus directory whose scenarios seed `--strategy guided` (default: `fixtures/corpus`).
         #[arg(long, conflicts_with = "config")]
         corpus: Option<PathBuf>,
-        /// Built-in scenarios: `core` (fee accounting), `extensions`, `all`, or `none`.
+        /// Built-in scenarios: `core` (fee accounting), `extensions`, `profiles`, `all`, `full`, or `none`.
         #[arg(long, default_value = "core", conflicts_with = "config")]
         suite: String,
         /// Shorthand for `--suite none`.
         #[arg(long, conflicts_with = "config")]
         no_suite: bool,
+        /// Enable the 13-invariant extended set (core 6 + ZERO/DILUT/SYMM + PAUSE/FREEZE/CPI/HOOK).
+        #[arg(long)]
+        extended: bool,
         /// JSON run configuration (see FORMAT.md).
         #[arg(long)]
         config: Option<PathBuf>,
@@ -96,6 +102,9 @@ pub enum Command {
     Replay {
         /// Scenario JSON file.
         scenario_file: PathBuf,
+        /// Evaluate the 13-invariant extended set instead of only the core 6.
+        #[arg(long)]
+        extended: bool,
     },
     /// Minimize a finding's scenario while its invariant stays violated.
     Minimize {
@@ -107,6 +116,9 @@ pub enum Command {
         /// Maximum number of executions spent shrinking.
         #[arg(long, default_value_t = 300)]
         max_attempts: usize,
+        /// Evaluate the 13-invariant extended set while shrinking (needed for INV-ZERO/DILUT/SYMM/PAUSE/FREEZE/CPI/HOOK findings).
+        #[arg(long)]
+        extended: bool,
     },
     /// Print a stored campaign's report.
     Report {
@@ -130,12 +142,15 @@ pub enum Command {
         /// Number of generated scenarios.
         #[arg(long, default_value_t = 0)]
         count: usize,
-        /// Built-in scenarios: `core` (fee accounting), `extensions`, `all`, or `none`.
+        /// Built-in scenarios: `core` (fee accounting), `extensions`, `profiles`, `all`, `full`, or `none`.
         #[arg(long, default_value = "core")]
         suite: String,
         /// Shorthand for `--suite none`.
         #[arg(long)]
         no_suite: bool,
+        /// Enable the 13-invariant extended set (core 6 + ZERO/DILUT/SYMM + PAUSE/FREEZE/CPI/HOOK).
+        #[arg(long)]
+        extended: bool,
         /// Artifact directory used by the export key (default: `tokenscope-out`).
         #[arg(long)]
         out: Option<PathBuf>,

@@ -4,7 +4,7 @@
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokenscope_invariants::catalog;
+use tokenscope_invariants::{InvariantDef, InvariantRegistry, catalog, extended_catalog};
 use tokenscope_model::{Campaign, CorpusCase, Expectation, Finding, RunRecord};
 use tokenscope_report::Artifacts;
 use tokenscope_scenarios::SuiteSelection;
@@ -87,6 +87,8 @@ pub struct Options {
     pub count: usize,
     /// Which built-in scenarios run.
     pub suite: SuiteSelection,
+    /// Whether to evaluate the 13-invariant extended set instead of only the 6 core checks.
+    pub extended: bool,
     /// Artifact output directory.
     pub out_dir: PathBuf,
     /// Corpus directory.
@@ -267,13 +269,31 @@ impl App {
             .copied()
     }
 
+    /// Invariant registry matching [`Options::extended`].
+    pub fn invariant_registry(&self) -> InvariantRegistry {
+        if self.opts.extended {
+            InvariantRegistry::with_extended_invariants()
+        } else {
+            InvariantRegistry::default()
+        }
+    }
+
+    /// Invariant definitions active under [`Options::extended`].
+    pub fn invariant_catalog(&self) -> Vec<InvariantDef> {
+        if self.opts.extended {
+            extended_catalog().to_vec()
+        } else {
+            catalog().to_vec()
+        }
+    }
+
     fn list_len(&self) -> usize {
         match self.screen {
             Screen::Scenarios | Screen::Execution | Screen::TokenConfig => {
                 self.visible_runs().len()
             }
             Screen::Findings => self.findings().len(),
-            Screen::Invariants => catalog().len(),
+            Screen::Invariants => self.invariant_catalog().len(),
             Screen::Corpus => self.corpus_cases.len(),
             _ => 0,
         }
@@ -370,6 +390,12 @@ impl App {
                 } else {
                     "demo-escrow-vulnerable".into()
                 };
+                self.pending = Some(Command::Rerun);
+            }
+            KeyCode::Char('x') => {
+                self.opts.extended = !self.opts.extended;
+                let max_idx = self.invariant_catalog().len().saturating_sub(1);
+                self.invariant_sel = self.invariant_sel.min(max_idx);
                 self.pending = Some(Command::Rerun);
             }
             KeyCode::Char('r') => self.pending = Some(Command::Rerun),

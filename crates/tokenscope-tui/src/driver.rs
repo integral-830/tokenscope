@@ -19,15 +19,12 @@ use tokenscope_report::write_artifacts;
 
 use crate::{
     app::{App, CaseOutcome, Command, Options, Screen},
-    runner::{RunEvent, spawn},
+    runner::{RunEvent, build_engine, spawn},
     ui,
 };
 
 fn engine(opts: &Options) -> Engine {
-    match &opts.program_dir {
-        Some(d) => Engine::with_program_dir(d.clone()),
-        None => Engine::new(),
-    }
+    build_engine(opts.program_dir.as_deref(), opts.extended)
 }
 
 fn start(opts: &Options) -> Receiver<RunEvent> {
@@ -36,6 +33,7 @@ fn start(opts: &Options) -> Receiver<RunEvent> {
         opts.seed,
         opts.count,
         opts.suite,
+        opts.extended,
         opts.program_dir.clone(),
     )
 }

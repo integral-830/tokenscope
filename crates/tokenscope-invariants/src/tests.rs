@@ -519,3 +519,316 @@ fn custom_invariant_can_be_registered_and_evaluated() {
     assert_eq!(f[0].invariant_id, "INV-CUSTOM-001");
     assert_eq!(f[0].expected, "custom invariant INV-CUSTOM-001");
 }
+
+#[test]
+fn extended_catalog_has_thirteen_documented_unique_invariants() {
+    let cat = extended_catalog();
+    assert_eq!(cat.len(), 13);
+    for (i, a) in cat.iter().enumerate() {
+        assert!(!a.preconditions.is_empty() && !a.exceptions.is_empty() && !a.expected.is_empty());
+        assert!(cat.iter().skip(i + 1).all(|b| b.id != a.id));
+    }
+}
+
+#[test]
+fn registry_with_extended_invariants_evaluates_all_thirteen() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    assert_eq!(reg.len(), 13);
+    assert_eq!(reg.catalog().as_slice(), extended_catalog().as_slice());
+
+    let t = trace(vec![vulnerable_deposit()]);
+    let evals = reg.evaluate(&t);
+    assert_eq!(evals.len(), 13);
+}
+
+#[test]
+fn zero_001_detects_non_zero_deposit_with_zero_credit_and_ignores_zero_amount() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let s = step(
+        0,
+        Action::Deposit { amount: 1_000 },
+        snap(0, None, 0, 10_000),
+        snap(1_000, None, 0, 9_000),
+        true,
+    );
+    let evals = reg.evaluate(&trace(vec![s]));
+    let zero_eval = evals
+        .iter()
+        .find(|e| e.invariant_id == "INV-ZERO-001")
+        .unwrap();
+    assert!(matches!(zero_eval.verdict, Verdict::Violated { .. }));
+
+    let noop = step(
+        0,
+        Action::Deposit { amount: 0 },
+        snap(0, None, 0, 10_000),
+        snap(0, None, 0, 10_000),
+        true,
+    );
+    let noop_eval = reg.evaluate(&trace(vec![noop]));
+    let zero_noop = noop_eval
+        .iter()
+        .find(|e| e.invariant_id == "INV-ZERO-001")
+        .unwrap();
+    assert_eq!(zero_noop.verdict, Verdict::NotApplicable);
+}
+
+#[test]
+fn dilut_001_detects_exchange_rate_drop() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let s = step(
+        0,
+        Action::Deposit { amount: 1_000 },
+        snap(1_000, None, 1_000, 10_000),
+        snap(1_000, None, 2_000, 9_000),
+        true,
+    );
+    let evals = reg.evaluate(&trace(vec![s]));
+    let dilut_eval = evals
+        .iter()
+        .find(|e| e.invariant_id == "INV-DILUT-001")
+        .unwrap();
+    assert!(matches!(dilut_eval.verdict, Verdict::Violated { .. }));
+}
+
+#[test]
+fn symm_001_detects_asymmetric_vault_drain() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let s = step(
+        0,
+        Action::Withdraw,
+        snap(2_000, None, 2_000, 0),
+        snap(500, None, 1_500, 1_500),
+        true,
+    );
+    let evals = reg.evaluate(&trace(vec![s]));
+    let symm_eval = evals
+        .iter()
+        .find(|e| e.invariant_id == "INV-SYMM-001")
+        .unwrap();
+    assert!(matches!(symm_eval.verdict, Verdict::Violated { .. }));
+}
+
+#[test]
+fn pause_001_enforces_pause_on_transfers_and_allows_admin_ops() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let mut paused = snap(0, None, 0, 10_000);
+    paused.mint_paused = Some(true);
+
+    // Rejected deposit while paused => Held
+    let rejected = step(0, Action::Deposit { amount: 500 }, paused, paused, false);
+    let e_ok = reg.evaluate(&trace(vec![rejected]));
+    assert_eq!(
+        e_ok.iter()
+            .find(|e| e.invariant_id == "INV-PAUSE-001")
+            .unwrap()
+            .verdict,
+        Verdict::Held
+    );
+
+    // Allowed ApproveDelegate while paused => NotApplicable
+    let mut after_approve = paused;
+    after_approve.delegate_allowance = 300;
+    let approve = step(
+        0,
+        Action::ApproveDelegate { amount: 300 },
+        paused,
+        after_approve,
+        true,
+    );
+    let e_app = reg.evaluate(&trace(vec![approve]));
+    assert_eq!(
+        e_app
+            .iter()
+            .find(|e| e.invariant_id == "INV-PAUSE-001")
+            .unwrap()
+            .verdict,
+        Verdict::NotApplicable
+    );
+
+    // Transfer succeeded while paused => Violated
+    let mut after_bad = paused;
+    after_bad.vault_amount = 500;
+    after_bad.escrow_recorded = 500;
+    after_bad.depositor_balance = 9_500;
+    let bypass = step(0, Action::Deposit { amount: 500 }, paused, after_bad, true);
+    let t_bad = trace(vec![bypass]);
+    let e_bad = reg.evaluate(&t_bad);
+    assert!(matches!(
+        e_bad
+            .iter()
+            .find(|e| e.invariant_id == "INV-PAUSE-001")
+            .unwrap()
+            .verdict,
+        Verdict::Violated { .. }
+    ));
+    let f = reg.findings(&scenario(), &t_bad, &e_bad);
+    assert!(f.iter().any(|item| item.invariant_id == "INV-PAUSE-001"));
+    assert_eq!(
+        f.iter()
+            .find(|item| item.invariant_id == "INV-PAUSE-001")
+            .unwrap()
+            .severity,
+        Severity::High
+    );
+}
+
+#[test]
+fn freeze_001_enforces_frozen_source_and_vault_boundaries() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let mut frozen_src = snap(1_000, None, 1_000, 9_000);
+    frozen_src.depositor_frozen = true;
+
+    // Deposit from frozen source rejected => Held
+    let dep_rej = step(
+        0,
+        Action::Deposit { amount: 100 },
+        frozen_src,
+        frozen_src,
+        false,
+    );
+    assert_eq!(
+        reg.evaluate(&trace(vec![dep_rej]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-FREEZE-001")
+            .unwrap()
+            .verdict,
+        Verdict::Held
+    );
+
+    // Withdraw to separate withdraw_destination while only depositor_source is frozen => NotApplicable
+    let mut after_wd = frozen_src;
+    after_wd.vault_amount = 0;
+    after_wd.escrow_recorded = 0;
+    after_wd.destination_balance = 1_000;
+    let wd_ok = step(0, Action::Withdraw, frozen_src, after_wd, true);
+    assert_eq!(
+        reg.evaluate(&trace(vec![wd_ok]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-FREEZE-001")
+            .unwrap()
+            .verdict,
+        Verdict::NotApplicable
+    );
+
+    // Withdraw from frozen vault succeeding => Violated
+    let mut frozen_vault = snap(1_000, None, 1_000, 9_000);
+    frozen_vault.vault_frozen = true;
+    let mut drained = frozen_vault;
+    drained.vault_amount = 0;
+    drained.escrow_recorded = 0;
+    drained.destination_balance = 1_000;
+    let wd_bad = step(0, Action::Withdraw, frozen_vault, drained, true);
+    assert!(matches!(
+        reg.evaluate(&trace(vec![wd_bad]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-FREEZE-001")
+            .unwrap()
+            .verdict,
+        Verdict::Violated { .. }
+    ));
+}
+
+#[test]
+fn cpi_001_blocks_owner_cpi_deposit_and_allows_delegate_transfer() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let mut guarded = snap(0, None, 0, 10_000);
+    guarded.source_cpi_guard = true;
+    guarded.delegate_allowance = 300;
+
+    // Rejected owner CPI deposit => Held
+    let rej = step(0, Action::Deposit { amount: 500 }, guarded, guarded, false);
+    assert_eq!(
+        reg.evaluate(&trace(vec![rej]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-CPI-001")
+            .unwrap()
+            .verdict,
+        Verdict::Held
+    );
+
+    // Succeeded delegate transfer under CPI guard => NotApplicable (allowed)
+    let mut after_del = guarded;
+    after_del.depositor_balance = 9_800;
+    after_del.delegate_allowance = 100;
+    let del_ok = step(
+        0,
+        Action::DelegateTransfer { amount: 200 },
+        guarded,
+        after_del,
+        true,
+    );
+    assert_eq!(
+        reg.evaluate(&trace(vec![del_ok]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-CPI-001")
+            .unwrap()
+            .verdict,
+        Verdict::NotApplicable
+    );
+
+    // Succeeded owner CPI deposit => Violated
+    let mut after_bad = guarded;
+    after_bad.vault_amount = 500;
+    after_bad.escrow_recorded = 500;
+    after_bad.depositor_balance = 9_500;
+    let bad = step(0, Action::Deposit { amount: 500 }, guarded, after_bad, true);
+    assert!(matches!(
+        reg.evaluate(&trace(vec![bad]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-CPI-001")
+            .unwrap()
+            .verdict,
+        Verdict::Violated { .. }
+    ));
+}
+
+#[test]
+fn hook_001_requires_hook_invocation_on_transfer_and_no_change_on_failure() {
+    let reg = InvariantRegistry::with_extended_invariants();
+    let mut before = snap(0, None, 0, 10_000);
+    before.hook_invocations = Some(0);
+
+    // Failed deposit on TransferHook mint leaves counter unchanged => Held
+    let failed = step(0, Action::Deposit { amount: 500 }, before, before, false);
+    assert_eq!(
+        reg.evaluate(&trace(vec![failed]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-HOOK-001")
+            .unwrap()
+            .verdict,
+        Verdict::Held
+    );
+
+    // Succeeded deposit invoking hook => Held
+    let mut ok_after = snap(500, None, 500, 9_500);
+    ok_after.hook_invocations = Some(1);
+    let ok = step(0, Action::Deposit { amount: 500 }, before, ok_after, true);
+    assert_eq!(
+        reg.evaluate(&trace(vec![ok]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-HOOK-001")
+            .unwrap()
+            .verdict,
+        Verdict::Held
+    );
+
+    // Succeeded deposit bypassing hook (counter stayed 0) => Violated
+    let mut bypass_after = snap(500, None, 500, 9_500);
+    bypass_after.hook_invocations = Some(0);
+    let bypass = step(
+        0,
+        Action::Deposit { amount: 500 },
+        before,
+        bypass_after,
+        true,
+    );
+    assert!(matches!(
+        reg.evaluate(&trace(vec![bypass]))
+            .iter()
+            .find(|e| e.invariant_id == "INV-HOOK-001")
+            .unwrap()
+            .verdict,
+        Verdict::Violated { .. }
+    ));
+}

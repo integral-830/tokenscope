@@ -699,3 +699,214 @@ fn completion_generates_valid_scripts_for_supported_shells() {
         );
     }
 }
+
+#[test]
+fn extended_invariants_and_profiles_suite_work_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Default `inspect` keeps the 6 core invariants; `--extended` reveals all 13.
+    let ins_core = tokenscope(&["inspect"]);
+    assert_eq!(ins_core.code, 0);
+    assert!(!ins_core.stdout.contains("INV-ZERO-001"));
+    assert!(ins_core.stdout.contains("profile-rwa-regulated-mint"));
+
+    let ins_ext = tokenscope(&["inspect", "--extended"]);
+    assert_eq!(ins_ext.code, 0);
+    for id in [
+        "INV-ZERO-001",
+        "INV-DILUT-001",
+        "INV-SYMM-001",
+        "INV-PAUSE-001",
+        "INV-FREEZE-001",
+        "INV-CPI-001",
+        "INV-HOOK-001",
+    ] {
+        assert!(
+            ins_ext.stdout.contains(id),
+            "inspect --extended missing {id}"
+        );
+    }
+
+    // Core suite on demo-escrow-corrected passes without --extended,
+    // while --extended flags INV-ZERO-001 (100% fee truncation).
+    let dir_core = dir.path().join("core");
+    let run_core = tokenscope(&[
+        "run",
+        "--target",
+        FIXED,
+        "--count",
+        "0",
+        "--out",
+        s(&dir_core),
+    ]);
+    assert_eq!(run_core.code, 0, "{}{}", run_core.stdout, run_core.stderr);
+
+    let dir_ext = dir.path().join("ext");
+    let run_ext = tokenscope(&[
+        "run",
+        "--target",
+        FIXED,
+        "--count",
+        "0",
+        "--extended",
+        "--out",
+        s(&dir_ext),
+    ]);
+    assert_eq!(run_ext.code, 1, "{}{}", run_ext.stdout, run_ext.stderr);
+    assert!(
+        run_ext.stdout.contains("INV-ZERO-001"),
+        "{}",
+        run_ext.stdout
+    );
+
+    // Combined mint profiles suite (`--suite profiles`, 5 scenarios) runs cleanly.
+    let dir_prof = dir.path().join("prof");
+    let run_prof = tokenscope(&[
+        "run",
+        "--target",
+        FIXED,
+        "--suite",
+        "profiles",
+        "--count",
+        "0",
+        "--extended",
+        "--out",
+        s(&dir_prof),
+    ]);
+    assert_eq!(run_prof.code, 1, "{}{}", run_prof.stdout, run_prof.stderr);
+    assert!(
+        run_prof.stdout.contains("executed 5 "),
+        "{}",
+        run_prof.stdout
+    );
+    assert!(
+        run_prof.stdout.contains("INV-CUST-001"),
+        "{}",
+        run_prof.stdout
+    );
+    assert!(
+        run_prof.stdout.contains("INV-ZERO-001"),
+        "{}",
+        run_prof.stdout
+    );
+    assert!(
+        !run_prof.stdout.contains("INV-PAUSE-001"),
+        "{}",
+        run_prof.stdout
+    );
+    assert!(
+        !run_prof.stdout.contains("INV-FREEZE-001"),
+        "{}",
+        run_prof.stdout
+    );
+    assert!(
+        !run_prof.stdout.contains("INV-CPI-001"),
+        "{}",
+        run_prof.stdout
+    );
+
+    // Full suite (`--suite full`) combines core + extensions + profiles = 29 scenarios.
+    let dir_full = dir.path().join("full");
+    let run_full = tokenscope(&[
+        "run",
+        "--target",
+        FIXED,
+        "--suite",
+        "full",
+        "--count",
+        "0",
+        "--extended",
+        "--out",
+        s(&dir_full),
+    ]);
+    assert_eq!(run_full.code, 1, "{}{}", run_full.stdout, run_full.stderr);
+    assert!(
+        run_full.stdout.contains("executed 29 "),
+        "{}",
+        run_full.stdout
+    );
+
+    // `--config` accepts `"extended": true`.
+    let cfg = dir.path().join("ext.json");
+    fs::write(
+        &cfg,
+        r#"{"schema_version":1,"target":"demo-escrow-corrected","suite":"profiles","extended":true}"#,
+    )
+    .unwrap();
+    let cfg_dir = dir.path().join("cfg");
+    let run_cfg = tokenscope(&["run", "--config", s(&cfg), "--out", s(&cfg_dir)]);
+    assert_eq!(run_cfg.code, 1, "{}{}", run_cfg.stdout, run_cfg.stderr);
+    assert!(run_cfg.stdout.contains("executed 5 "), "{}", run_cfg.stdout);
+
+    // Replay & minimize with `--extended` on an INV-ZERO-001 finding work cleanly.
+    let cdir = only_dir(&dir_prof);
+    let report: Report =
+        serde_json::from_str(&fs::read_to_string(cdir.join("report.json")).unwrap()).unwrap();
+    let zero_finding = report
+        .findings
+        .iter()
+        .find(|f| f.invariant_id == "INV-ZERO-001")
+        .expect("INV-ZERO-001 finding saved in report");
+    let sc_path = dir.path().join("sc.json");
+    fs::write(&sc_path, zero_finding.reproduction.scenario.to_json()).unwrap();
+    let rep = tokenscope(&["replay", s(&sc_path), "--extended"]);
+    assert_eq!(rep.code, 1, "{}{}", rep.stdout, rep.stderr);
+    assert!(rep.stdout.contains("INV-ZERO-001"));
+
+    let finding_path = dir.path().join("f.json");
+    fs::write(&finding_path, zero_finding.to_json()).unwrap();
+    let min_out = dir.path().join("f.min.json");
+    let min = tokenscope(&[
+        "minimize",
+        s(&finding_path),
+        "--out",
+        s(&min_out),
+        "--max-attempts",
+        "40",
+        "--extended",
+    ]);
+    assert_eq!(min.code, 0, "{}{}", min.stdout, min.stderr);
+    let minimized = Finding::from_json(&fs::read_to_string(&min_out).unwrap()).unwrap();
+    assert!(minimized.minimized.is_some());
+
+    // TUI snapshots support `--suite profiles` and `--extended` (13 invariants).
+    let tui_inv = tokenscope(&[
+        "tui",
+        "--target",
+        FIXED,
+        "--suite",
+        "profiles",
+        "--extended",
+        "--snapshot",
+        "invariants",
+    ]);
+    assert_eq!(tui_inv.code, 0, "{}{}", tui_inv.stdout, tui_inv.stderr);
+    assert!(
+        tui_inv.stdout.contains("Invariants (13 extended)")
+            && tui_inv.stdout.contains("INV-ZERO-001")
+            && tui_inv.stdout.contains("INV-HOOK-001"),
+        "{}",
+        tui_inv.stdout
+    );
+
+    let tui_findings = tokenscope(&[
+        "tui",
+        "--target",
+        FIXED,
+        "--suite",
+        "profiles",
+        "--extended",
+        "--snapshot",
+        "findings",
+    ]);
+    assert_eq!(
+        tui_findings.code, 0,
+        "{}{}",
+        tui_findings.stdout, tui_findings.stderr
+    );
+    assert!(
+        tui_findings.stdout.contains("INV-ZERO-001"),
+        "{}",
+        tui_findings.stdout
+    );
+}

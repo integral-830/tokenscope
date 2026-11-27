@@ -14,14 +14,14 @@ use tokenscope_core::{
     corpus::{Corpus, CorpusError, replay_case},
 };
 use tokenscope_executor::{sha256_hex, token_2022_elf_sha256};
-use tokenscope_invariants::catalog;
+use tokenscope_invariants::{catalog, extended_catalog};
 use tokenscope_model::{
     Campaign, CorpusCase, Expectation, Finding, ModelError, OutcomeClass, Scenario,
 };
 use tokenscope_report::{render_json, render_markdown, render_sarif, render_text, write_artifacts};
 use tokenscope_scenarios::{
     SuiteSelection, builtin_suite, extension_suite, generate, generate_extended, generate_guided,
-    generate_stateful,
+    generate_stateful, mint_profile_suite,
 };
 use tokenscope_shrinker::{ShrinkConfig, ShrinkError};
 
@@ -96,7 +96,7 @@ fn corpus_dir(c: Option<PathBuf>) -> PathBuf {
 fn parse_suite(name: &str) -> Result<SuiteSelection> {
     SuiteSelection::parse(name).ok_or_else(|| {
         usage(format!(
-            "unknown suite `{name}`; expected none, core, extensions or all"
+            "unknown suite `{name}`; expected none, core, extensions, profiles, all or full"
         ))
     })
 }
@@ -134,12 +134,15 @@ struct RunConfig {
     generated: usize,
     #[serde(default = "yes")]
     builtin_suite: bool,
-    /// `none | core | extensions | all`; when present it overrides `builtin_suite`.
+    /// `none | core | extensions | profiles | all | full`; when present it overrides `builtin_suite`.
     #[serde(default)]
     suite: Option<String>,
     /// `random | extended | guided` (default `random`).
     #[serde(default)]
     strategy: Option<String>,
+    /// Enable the 13-invariant extended set.
+    #[serde(default)]
+    extended: bool,
 }
 
 fn yes() -> bool {
@@ -149,7 +152,7 @@ fn yes() -> bool {
 pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
     match cmd {
         Command::Doctor => doctor(out),
-        Command::Inspect { target } => inspect(target, out),
+        Command::Inspect { target, extended } => inspect(target, extended, out),
         Command::Run {
             target,
             seed,
@@ -158,10 +161,11 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
             corpus,
             suite,
             no_suite,
+            extended,
             config,
             out: out_path,
         } => {
-            let (target, seed, count, suite, strategy) = match config {
+            let (target, seed, count, suite, strategy, extended) = match config {
                 Some(path) => {
                     let text = read_file(&path)?;
                     let c: RunConfig = serde_json::from_str(&text)
@@ -179,7 +183,14 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
                         None => SuiteSelection::None,
                     };
                     let strategy = parse_strategy(c.strategy.as_deref().unwrap_or("random"))?;
-                    (c.target, c.seed, c.generated, sel, strategy)
+                    (
+                        c.target,
+                        c.seed,
+                        c.generated,
+                        sel,
+                        strategy,
+                        c.extended || extended,
+                    )
                 }
                 None => {
                     let t = target.ok_or_else(|| usage("`run` needs --target or --config"))?;
@@ -189,6 +200,7 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
                         count,
                         suite_arg(&suite, no_suite)?,
                         parse_strategy(&strategy)?,
+                        extended,
                     )
                 }
             };
@@ -199,15 +211,20 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
                 suite,
                 strategy,
                 corpus: corpus_dir(corpus),
+                extended,
             };
             run_campaigns(&spec, out_dir(out_path), out)
         }
-        Command::Replay { scenario_file } => replay(&scenario_file, out),
+        Command::Replay {
+            scenario_file,
+            extended,
+        } => replay(&scenario_file, extended, out),
         Command::Minimize {
             finding_file,
             out: out_path,
             max_attempts,
-        } => minimize(&finding_file, out_path, max_attempts, out),
+            extended,
+        } => minimize(&finding_file, out_path, max_attempts, extended, out),
         Command::Report {
             campaign_id,
             format,
@@ -219,6 +236,7 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
             count,
             suite,
             no_suite,
+            extended,
             out: out_path,
             corpus,
             snapshot,
@@ -228,6 +246,7 @@ pub(crate) fn dispatch(cmd: Command, out: &mut dyn Write) -> Result<i32> {
                 seed,
                 count,
                 suite: suite_arg(&suite, no_suite)?,
+                extended,
                 out_dir: out_dir(out_path),
                 corpus_dir: corpus_dir(corpus),
                 program_dir: None,
@@ -330,7 +349,7 @@ fn doctor(out: &mut dyn Write) -> Result<i32> {
     Ok(if failed { EXIT_SETUP } else { EXIT_OK })
 }
 
-fn inspect(target: Option<String>, out: &mut dyn Write) -> Result<i32> {
+fn inspect(target: Option<String>, extended: bool, out: &mut dyn Write) -> Result<i32> {
     let targets = match target {
         Some(t) => resolve_targets(&t)?,
         None => TARGETS.iter().map(|t| (*t).to_string()).collect(),
@@ -377,9 +396,23 @@ fn inspect(target: Option<String>, out: &mut dyn Write) -> Result<i32> {
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;
+        writeln!(
+            out,
+            "  profiles suite: {}",
+            mint_profile_suite(t)
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
     }
     writeln!(out, "\ninvariants:")?;
-    for d in catalog() {
+    let defs: Vec<_> = if extended {
+        extended_catalog().to_vec()
+    } else {
+        catalog().to_vec()
+    };
+    for d in defs {
         writeln!(
             out,
             "  {} {}\n    expected: {}\n    preconditions: {}\n    exceptions: {}",
@@ -438,6 +471,7 @@ struct RunSpec {
     suite: SuiteSelection,
     strategy: Strategy,
     corpus: PathBuf,
+    extended: bool,
 }
 
 fn run_campaigns(spec: &RunSpec, out_path: PathBuf, out: &mut dyn Write) -> Result<i32> {
@@ -460,7 +494,11 @@ fn run_campaigns(spec: &RunSpec, out_path: PathBuf, out: &mut dyn Write) -> Resu
     } else {
         vec![]
     };
-    let engine = Engine::new();
+    let engine = if spec.extended {
+        Engine::with_extended_invariants()
+    } else {
+        Engine::new()
+    };
     let mut code = EXIT_OK;
     for t in targets {
         let mut scenarios: Vec<Scenario> = spec.suite.scenarios(&t);
@@ -496,9 +534,14 @@ fn run_campaigns(spec: &RunSpec, out_path: PathBuf, out: &mut dyn Write) -> Resu
     Ok(code)
 }
 
-fn replay(path: &Path, out: &mut dyn Write) -> Result<i32> {
+fn replay(path: &Path, extended: bool, out: &mut dyn Write) -> Result<i32> {
     let scenario = Scenario::from_json(&read_file(path)?).map_err(|e| model_err(path, e))?;
-    let run = Engine::new().run_scenario(&scenario);
+    let engine = if extended {
+        Engine::with_extended_invariants()
+    } else {
+        Engine::new()
+    };
+    let run = engine.run_scenario(&scenario);
     let campaign = Campaign::new(scenario.target.clone(), scenario.seed, vec![run]);
     write!(out, "{}", render_text(&campaign))?;
     Ok(exit_for(&campaign))
@@ -508,6 +551,7 @@ fn minimize(
     path: &Path,
     out_path: Option<PathBuf>,
     max_attempts: usize,
+    extended: bool,
     out: &mut dyn Write,
 ) -> Result<i32> {
     if max_attempts > MAX_SHRINK_ATTEMPTS {
@@ -516,7 +560,12 @@ fn minimize(
         )));
     }
     let finding = Finding::from_json(&read_file(path)?).map_err(|e| model_err(path, e))?;
-    let (minimized, report) = Engine::new()
+    let engine = if extended {
+        Engine::with_extended_invariants()
+    } else {
+        Engine::new()
+    };
+    let (minimized, report) = engine
         .minimize(&finding, ShrinkConfig { max_attempts })
         .map_err(|e| match e {
             ShrinkError::InvalidInput(m) => usage(m),

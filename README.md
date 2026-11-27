@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <a href="docs/toolchain.md"><img src="https://img.shields.io/badge/rust-1.99.0%2B-orange.svg" alt="Rust 1.99.0+" /></a>
   <a href="docs/supported-extensions.md"><img src="https://img.shields.io/badge/solana-Token--2022-14F195.svg?logo=solana&logoColor=white" alt="Solana Token-2022" /></a>
-  <a href="https://github.com/integral-830/tokenscope"><img src="https://img.shields.io/badge/tests-259%20passing-brightgreen.svg" alt="Tests: 259 passing" /></a>
+  <a href="https://github.com/integral-830/tokenscope"><img src="https://img.shields.io/badge/tests-271%20passing-brightgreen.svg" alt="Tests: 271 passing" /></a>
   <a href="docs/architecture.md"><img src="https://img.shields.io/badge/engine-Mollusk%20SVM-9945FF.svg" alt="Mollusk SVM" /></a>
   <a href="FORMAT.md"><img src="https://img.shields.io/badge/security-SARIF%202.1.0-blueviolet.svg" alt="SARIF 2.1.0" /></a>
 </p>
@@ -24,7 +24,7 @@ and writes reproducible findings.
 Target adapter -> Scenarios -> Real SVM execution -> Invariant checking -> Shrinking -> Findings
 ```
 
-> **Status:** version 0.1.0. One target (a demo escrow), six invariants, and 259 passing workspace
+> **Status:** version 0.1.0. One target (a demo escrow), 13 invariants (6 core, 7 `--extended`), and 271 passing workspace
 > tests. Token-2022 behavior verified by executable tests: transfer fees (including epoch delays,
 > `TransferCheckedWithFee`, harvest and withdraw), freeze/thaw, DefaultAccountState, Pausable,
 > transfer hooks (fixture hook), CPI Guard (direct and CPI forwarder fixture), delegates, permanent
@@ -63,7 +63,7 @@ Full walkthrough with replay and minimization: [docs/demo.md](docs/demo.md).
 
 https://github.com/user-attachments/assets/9d5a5c23-4715-4365-a486-77e84d1d793d
 
-> **Video Walkthrough:** [assets/tokenscope-showcase.mp4](assets/tokenscope-showcase.mp4) (02:49 runtime, strictly under the 3-minute hackathon limit).
+> **Video Walkthrough:** [assets/tokenscope-showcase.mp4](assets/tokenscope-showcase.mp4) (02:50 runtime, strictly under the 3-minute hackathon limit).
 > Features real Mollusk SVM execution against un-mocked Token-2022 bytecodes, invariant detection on Pinocchio escrow, deterministic failure minimization, and the live Ratatui TUI dashboard.
 
 ### Interface & Execution Screenshots
@@ -188,28 +188,32 @@ cargo test --workspace               # all tests (needs the built programs)
 | Command | Purpose | Exit codes |
 |---|---|---|
 | `doctor` | verify the environment, incl. a real fee transfer | 0 ok, 3 problem |
-| `inspect [--target T]` | show target configuration and invariants | 0 |
-| `run --target T --seed N [--count N] [--suite core\|extensions\|all\|none] [--strategy random\|extended\|guided\|stateful] [--out DIR]` / `run --config FILE` | run a campaign, write artifacts | 0 no violations, 1 violations, 2 bad input, 3 setup error |
-| `replay <scenario-file>` | re-run one scenario | 0 / 1 / 2 / 3 |
-| `minimize <finding-file> [--out F] [--max-attempts N]` | shrink a finding's scenario | 0, 2, 4 not reproducible |
+| `inspect [--target T] [--extended]` | show target configuration and invariants | 0 |
+| `run --target T --seed N [--count N] [--suite core\|extensions\|profiles\|all\|full\|none] [--strategy random\|extended\|guided\|stateful] [--extended] [--out DIR]` / `run --config FILE` | run a campaign, write artifacts | 0 no violations, 1 violations, 2 bad input, 3 setup error |
+| `replay <scenario-file> [--extended]` | re-run one scenario | 0 / 1 / 2 / 3 |
+| `minimize <finding-file> [--out F] [--max-attempts N] [--extended]` | shrink a finding's scenario | 0, 2, 4 not reproducible |
 | `report <campaign-id> [--format json\|text\|markdown\|sarif]` | print or export a campaign report | 0, 2 |
 | `corpus list \| replay <id>\|--all \| add <scenario> --description ...` | regression corpus | 0, 2, 3, 4 mismatch |
-| `tui [--snapshot SCREEN]` | interactive UI (or print one screen headlessly) | 0, 2, 3 |
+| `tui [--suite S] [--extended] [--snapshot SCREEN]` | interactive UI (or print one screen headlessly) | 0, 2, 3 |
 | `completion <shell>` | generate shell autocompletion (`bash`, `zsh`, `fish`, `powershell`, `elvish`) | 0 |
 
 Targets: `demo-escrow-vulnerable`, `demo-escrow-corrected`, or `demo-escrow` (both).
 
-Suites: `core` (the original fee-accounting scenarios; default), `extensions` (extension, authorization and
-boundary scenarios), `all`, `none`. Note that the corrected escrow still reports a custody finding in the
-`extensions` suite (`permanent-delegate-drains-vault`): neither flavor checks the mint's extensions.
+Suites: `core` (the original 14 fee-accounting scenarios; default), `extensions` (10 extension, authorization and
+boundary scenarios), `profiles` (5 combined realistic Token-2022 mint profile scenarios), `all` (`core` + `extensions`,
+24 scenarios), `full` (`core` + `extensions` + `profiles`, 29 scenarios), `none`. Passing `--extended` enables
+all 13 invariants (`INV-ACCT/SOLV/ATOM/CONS/AUTH/CUST-001` plus `INV-ZERO/DILUT/SYMM/PAUSE/FREEZE/CPI/HOOK-001`). Note that
+the corrected escrow still reports a custody finding in the `extensions` and `profiles` suites (`permanent-delegate-drains-vault`,
+`profile-rwa-regulated-mint`): neither flavor checks the mint's extensions. Under `--extended`, `fee-100pct-consumes-deposit`
+and `profile-micro-fee-dust-truncation` also trigger `INV-ZERO-001`.
 Strategies: `random` (seeded fee scenarios), `extended` (extension-aware templates), `guided` (mutates the
 suites and the regression corpus and keeps only scenarios that add a new *input-space* cell; it is not
 guided by program coverage), and `stateful` (model-based state-machine generation driven by `TokenReferenceModel`).
 
 ## Repository layout
 
-`crates/tokenscope-{model,executor,adapter,invariants,scenarios,shrinker,core,report,cli,tui}`,
-`programs/demo-escrow`, `fixtures/` (scenarios and the regression corpus), `scripts/`, `docs/`.
+`crates/tokenscope-{model,executor,adapter,invariants,scenarios,shrinker,core,report,cli,tui,fuzz-harness}`,
+`programs/demo-{escrow,hook,forwarder}`, `fixtures/` (scenarios and the regression corpus), `scripts/`, `docs/`.
 Architecture: [docs/architecture.md](docs/architecture.md).
 
 ## Execution boundaries and security model

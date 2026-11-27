@@ -23,6 +23,7 @@ fn opts(target: &str, out: PathBuf) -> Options {
         seed: 0,
         count: 0,
         suite: tokenscope_scenarios::SuiteSelection::Core,
+        extended: false,
         out_dir: out,
         corpus_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus"),
         program_dir: None,
@@ -43,6 +44,7 @@ fn finished_app(target: &str, out: PathBuf) -> App {
         0,
         0,
         tokenscope_scenarios::SuiteSelection::Core,
+        false,
         None,
     );
     finish(&mut app, rx);
@@ -335,4 +337,95 @@ fn rerun_with_toggled_target_produces_the_corrected_campaign() {
     assert_eq!(c.target, FIXED);
     assert_eq!(c.totals().invariant_violations, 0);
     assert!(c.runs.iter().any(|r| r.outcome == OutcomeClass::Pass));
+}
+
+#[test]
+fn extended_mode_and_profiles_suite_render_13_invariants_and_extensions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = opts(FIXED, dir.path().join("out"));
+    o.suite = tokenscope_scenarios::SuiteSelection::Profiles;
+    o.extended = true;
+
+    let mut app = App::new(o.clone());
+    load_corpus(&mut app);
+    let rx = spawn(
+        o.target.clone(),
+        o.seed,
+        o.count,
+        o.suite,
+        o.extended,
+        o.program_dir.clone(),
+    );
+    finish(&mut app, rx);
+
+    // Dashboard displays suite & extended invariant count.
+    let dash = text(&app, Screen::Dashboard);
+    assert!(
+        dash.contains("suite: Profiles") && dash.contains("invariants: extended (13)"),
+        "{dash}"
+    );
+
+    // Scenarios list displays mint extensions for profile scenarios.
+    let sc = text(&app, Screen::Scenarios);
+    assert!(
+        sc.contains("profile-rwa-regulated-mint")
+            && sc.contains("[pausable,default_account_state,permanent_delegate]"),
+        "{sc}"
+    );
+
+    // TokenConfig displays all configured extensions for the RWA regulated mint profile.
+    let tk = text(
+        &app.with_state("profile-rwa-regulated-mint", 0),
+        Screen::TokenConfig,
+    );
+    assert!(
+        tk.contains("DefaultAccountState: frozen=true")
+            && tk.contains("Pausable")
+            && tk.contains("PermanentDelegate"),
+        "{tk}"
+    );
+
+    // Findings include extended invariants (INV-ZERO-001 alongside INV-CUST-001).
+    let fd = text(&app, Screen::Findings);
+    assert!(
+        fd.contains("INV-ZERO-001") && fd.contains("INV-CUST-001"),
+        "{fd}"
+    );
+
+    // Invariants screen lists all 13 invariants and evaluates extended verdicts on traces.
+    let mut inv_app = app.with_state("profile-micro-fee-dust-truncation", 0);
+    inv_app.screen = Screen::Invariants;
+    inv_app.invariant_sel = 6; // ZERO_001 (index 6 in extended_catalog)
+    let iv = render_to_string(&inv_app, 160, 60);
+    assert!(
+        iv.contains("Invariants (13 extended)")
+            && iv.contains("INV-ZERO-001")
+            && iv.contains("INV-HOOK-001")
+            && iv.contains("VIOLATED - observed:"),
+        "{iv}"
+    );
+
+    // Help displays extended settings, all 13 invariant IDs, and the `x` shortcut.
+    let hp = text(&app, Screen::Help);
+    assert!(
+        hp.contains("invariants: extended (13)")
+            && hp.contains("INV-HOOK-001")
+            && hp.contains("toggle 6/13 invariants"),
+        "{hp}"
+    );
+
+    // Reports show Markdown & SARIF exports alongside JSON/text.
+    press(&mut app, KeyCode::Char('e'));
+    let cmd = app.pending.take().unwrap();
+    assert!(execute(&mut app, cmd).is_none());
+    app.screen = Screen::Reports;
+    let rp = render_to_string(&app, 160, 40);
+    assert!(rp.contains("MD report:") && rp.contains("SARIF:"), "{rp}");
+
+    // Toggling `x` switches back to core (6) and clamps invariant_sel safely.
+    inv_app.invariant_sel = 12;
+    press(&mut inv_app, KeyCode::Char('x'));
+    assert!(!inv_app.opts.extended);
+    assert!(inv_app.invariant_sel < 6);
+    assert_eq!(inv_app.pending, Some(Command::Rerun));
 }
